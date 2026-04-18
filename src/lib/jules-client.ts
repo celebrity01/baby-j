@@ -6,6 +6,7 @@ const GITHUB_PAGES_BASE = "/api/github-pages";
 const VERCEL_BASE = "/api/vercel";
 const NETLIFY_BASE = "/api/netlify";
 const RENDER_BASE = "/api/render";
+const DEPLOY_BASE = "/api/deploy";
 
 // ===== Types =====
 
@@ -257,6 +258,40 @@ export async function deployPages(
   return res.json();
 }
 
+// ===== Deployment Status =====
+
+export interface DeploymentStatus {
+  run_id?: number;
+  status: string;
+  conclusion?: string | null;
+  html_url?: string;
+  message: string;
+}
+
+export async function getDeploymentStatus(
+  githubToken: string,
+  params: {
+    workflow_run_id?: string | number;
+    owner?: string;
+    repo?: string;
+    workflow_file?: string;
+  }
+): Promise<DeploymentStatus> {
+  const res = await fetch(`${DEPLOY_BASE}/status`, {
+    method: "POST",
+    headers: {
+      "X-GitHub-Token": githubToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Failed to get deployment status (${res.status})`);
+  }
+  return res.json();
+}
+
 // ===== Vercel Calls =====
 
 export async function listVercelProjects(token: string): Promise<unknown[]> {
@@ -315,7 +350,7 @@ export async function createNetlifySite(
     "X-Netlify-Token": token,
     "Content-Type": "application/json",
   };
-  // Cross-system: forward GitHub token so the API route can resolve repo metadata
+  // Cross-system: forward GitHub token for workflow push + secret encryption
   if (githubToken) {
     headers["X-GitHub-Token"] = githubToken;
   }
@@ -326,7 +361,7 @@ export async function createNetlifySite(
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || errData.message || `Failed to create Netlify site (${res.status})`);
+    throw new Error(errData.error || errData.message || `Failed to create Netlify deployment (${res.status})`);
   }
   return res.json();
 }

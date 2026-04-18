@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   X, Globe, Server, CheckCircle2, Loader2, ArrowRight,
-  ChevronRight, ExternalLink, Key, AlertTriangle,
+  ChevronRight, ExternalLink, Key, AlertTriangle, Clock,
+  Zap, RefreshCw, FileCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,8 +14,11 @@ import {
   DialogContent,
 } from '@/components/ui/dialog';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { GitHubRepo } from '@/lib/jules-client';
-import { listGitHubRepos, listBranches, deployVercel, deployNetlify, deployRender, deployPages, createVercelProject, createNetlifySite, createRenderService } from '@/lib/jules-client';
+import type { GitHubRepo, DeploymentStatus } from '@/lib/jules-client';
+import {
+  listGitHubRepos, listBranches, deployVercel, deployNetlify, deployRender, deployPages,
+  createVercelProject, createNetlifySite, createRenderService, getDeploymentStatus,
+} from '@/lib/jules-client';
 
 interface GlassDeployNotificationProps {
   githubToken: string | null;
@@ -22,7 +26,15 @@ interface GlassDeployNotificationProps {
   onClose: () => void;
 }
 
-type DeployStep = 'select-provider' | 'api-key' | 'select-item' | 'select-branch' | 'confirm' | 'deploying' | 'result';
+type DeployStep =
+  | 'select-provider'
+  | 'api-key'
+  | 'select-item'
+  | 'select-branch'
+  | 'confirm'
+  | 'deploying'
+  | 'monitoring'
+  | 'result';
 
 interface ProviderConfig {
   id: string;
@@ -32,6 +44,7 @@ interface ProviderConfig {
   storageKey: string;
   helpUrl: string;
   helpText: string;
+  requiresProviderToken: boolean;
 }
 
 const providers: ProviderConfig[] = [
@@ -43,6 +56,7 @@ const providers: ProviderConfig[] = [
     storageKey: 'vercel-token',
     helpUrl: 'https://vercel.com/account/tokens',
     helpText: 'Create a token at vercel.com/account/tokens with full account access.',
+    requiresProviderToken: true,
   },
   {
     id: 'netlify',
@@ -52,6 +66,7 @@ const providers: ProviderConfig[] = [
     storageKey: 'netlify-token',
     helpUrl: 'https://app.netlify.com/user/applications/personal',
     helpText: 'Create a personal access token at app.netlify.com/user/applications.',
+    requiresProviderToken: true,
   },
   {
     id: 'render',
@@ -61,15 +76,17 @@ const providers: ProviderConfig[] = [
     storageKey: 'render-api-key',
     helpUrl: 'https://dashboard.render.com/y/account/api-keys',
     helpText: 'Create an API key at dashboard.render.com/y/account/api-keys.',
+    requiresProviderToken: true,
   },
   {
     id: 'github-pages',
     name: 'GitHub Pages',
     icon: Globe,
     color: '#E0F7FA',
-    storageKey: 'github-token', // Reuse the main GitHub token
+    storageKey: 'github-token',
     helpUrl: 'https://github.com/settings/tokens',
-    helpText: 'Uses your connected GitHub token. Make sure it has the repo scope.',
+    helpText: 'Uses your connected GitHub token. No separate token needed.',
+    requiresProviderToken: false,
   },
 ];
 
@@ -79,7 +96,6 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'string') return err;
   if (err && typeof err === 'object') {
     const obj = err as Record<string, unknown>;
-    // Common API error patterns
     if (obj.error && typeof obj.error === 'string') return obj.error;
     if (obj.error && typeof obj.error === 'object') {
       const e = obj.error as Record<string, unknown>;
@@ -108,10 +124,32 @@ export default function GlassDeployNotification({
   const [selectedHostItem, setSelectedHostItem] = useState('');
   const [selectedHostItemName, setSelectedHostItemName] = useState('');
   const [isDeploying, setIsDeploying] = useState(false);
-  const [deployResult, setDeployResult] = useState<{ success: boolean; url?: string; error?: string; message?: string } | null>(null);
-  const [itemTab, setItemTab] = useState<'host' | 'github'>('host');
+  const [deployResult, setDeployResult] = useState<{
+    success: boolean;
+    url?: string;
+    error?: string;
+    message?: string;
+    workflowUrl?: string;
+  } | null>(null);
+  const [itemTab, setItemTab] = useState<'host' | 'github'>('github');
   const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [loadItemsError, setLoadItemsError] = useState('');
+
+  // Monitoring state
+  const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
+  const [monitorTarget, setMonitorTarget] = useState<{
+    owner: string;
+    repo: string;
+    workflowFile: string;
+  } | null>(null);
+  const monitorInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clean up monitor interval on unmount
+  useEffect(() => {
+    return () => {
+      if (monitorInterval.current) clearInterval(monitorInterval.current);
+    };
+  }, []);
 
   const reset = useCallback(() => {
     setStep('select-provider');
@@ -127,9 +165,13 @@ export default function GlassDeployNotification({
     setSelectedHostItemName('');
     setIsDeploying(false);
     setDeployResult(null);
-    setItemTab('host');
+    setItemTab('github');
     setIsLoadingItems(false);
     setLoadItemsError('');
+    setDeploymentStatus(null);
+    setMonitorTarget(null);
+    if (monitorInterval.current) clearInterval(monitorInterval.current);
+    monitorInterval.current = null;
   }, []);
 
   const handleClose = () => {
@@ -139,6 +181,15 @@ export default function GlassDeployNotification({
 
   const handleSelectProvider = (provider: ProviderConfig) => {
     setSelectedProvider(provider);
+
+    if (!provider.requiresProviderToken) {
+      // GitHub Pages uses the main GitHub token directly
+      setSavedToken(githubToken);
+      setStep('select-item');
+      loadItems(provider, githubToken || '');
+      return;
+    }
+
     const stored = localStorage.getItem(provider.storageKey);
     if (stored) {
       setSavedToken(stored);
@@ -161,6 +212,7 @@ export default function GlassDeployNotification({
     setIsLoadingItems(true);
     setLoadItemsError('');
     try {
+      // Load provider's existing projects
       if (provider.id === 'vercel') {
         const res = await fetch('/api/vercel/projects', {
           headers: { 'X-Vercel-Token': token },
@@ -200,23 +252,19 @@ export default function GlassDeployNotification({
           headers: { 'X-GitHub-Token': token },
         });
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Failed to load GitHub Pages sites (${res.status})`);
+          // Don't throw for GitHub Pages - sites list is optional
+          setHostItems([]);
+        } else {
+          const data = await res.json();
+          setHostItems((data || []).map((s: { html_url: string; repo_name: string }) => {
+            const urlParts = (s.html_url || '').replace(/\/$/, '').split('/');
+            const repoSlug = urlParts.length >= 2 ? `${urlParts[urlParts.length - 2]}/${urlParts[urlParts.length - 1]}` : (s.repo_name || s.html_url);
+            return { id: repoSlug, name: s.repo_name || repoSlug, url: s.html_url };
+          }));
         }
-        const data = await res.json();
-        setHostItems((data || []).map((s: { html_url: string; repo_name: string; source?: { branch?: string } }) => {
-          // Extract owner/repo from html_url (e.g. "https://github.com/owner/repo")
-          const urlParts = (s.html_url || '').replace(/\/$/, '').split('/');
-          const repoSlug = urlParts.length >= 2 ? `${urlParts[urlParts.length - 2]}/${urlParts[urlParts.length - 1]}` : (s.repo_name || s.html_url);
-          return {
-            id: repoSlug,
-            name: s.repo_name || repoSlug,
-            url: s.html_url,
-          };
-        }));
       }
 
-      // Load GitHub repos for GitHub Pages and other providers
+      // Always load GitHub repos for new deployments
       if (githubToken) {
         const ghRepos = await listGitHubRepos(githubToken);
         setRepos(ghRepos);
@@ -249,25 +297,111 @@ export default function GlassDeployNotification({
     }
   };
 
+  // ── Deployment progress monitoring ──
+  const startMonitoring = (owner: string, repo: string, workflowFile: string) => {
+    if (!githubToken) return;
+    setMonitorTarget({ owner, repo, workflowFile });
+    setDeploymentStatus({ status: 'queued', message: 'Deployment is queued and waiting to start...' });
+    setStep('monitoring');
+
+    // Initial delay before first check (workflow needs time to register)
+    let attempts = 0;
+    const maxAttempts = 40; // 40 * 10s = ~6.7 minutes max
+
+    monitorInterval.current = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        if (monitorInterval.current) clearInterval(monitorInterval.current);
+        setDeploymentStatus({ status: 'timeout', message: 'Deployment is taking longer than expected. Check the workflow directly.' });
+        return;
+      }
+
+      try {
+        const status = await getDeploymentStatus(githubToken, { owner, repo, workflow_file: workflowFile });
+        setDeploymentStatus(status);
+
+        // Stop monitoring if completed
+        if (status.status === 'success' || status.status === 'failed' || status.status === 'cancelled') {
+          if (monitorInterval.current) clearInterval(monitorInterval.current);
+          monitorInterval.current = null;
+
+          // Transition to result
+          setTimeout(() => {
+            if (status.status === 'success') {
+              setDeployResult({
+                success: true,
+                url: deployResult?.url,
+                message: 'Deployment completed successfully!',
+                workflowUrl: status.html_url,
+              });
+            } else {
+              setDeployResult({
+                success: false,
+                error: status.message || 'Deployment failed. Check the workflow logs for details.',
+                workflowUrl: status.html_url,
+              });
+            }
+            setStep('result');
+          }, 1500);
+        }
+      } catch (err) {
+        console.warn('Status check failed:', err);
+      }
+    }, 10000); // Poll every 10 seconds
+  };
+
   const handleConfirm = async () => {
-    if (!selectedProvider || !savedToken) return;
+    if (!selectedProvider) return;
+
+    // For GitHub Pages, use githubToken directly
+    const providerToken = selectedProvider.requiresProviderToken ? savedToken : (githubToken || '');
+    if (!providerToken && selectedProvider.requiresProviderToken) return;
+
     setIsDeploying(true);
     setStep('deploying');
 
     try {
-      let result: { success: boolean; url?: string; error?: string };
+      let result: {
+        success: boolean;
+        url?: string;
+        error?: string;
+        message?: string;
+        workflowUrl?: string;
+        owner?: string;
+        repo?: string;
+        workflowFile?: string;
+      };
 
       if (selectedHostItem && itemTab === 'host') {
         // Redeploy existing project
-        result = await triggerRedeploy(selectedProvider, savedToken, selectedHostItem);
+        result = await triggerRedeploy(selectedProvider, providerToken, selectedHostItem);
       } else if (selectedRepo && selectedBranch) {
-        // Create and deploy from GitHub repo
-        result = await deployFromRepo(selectedProvider, savedToken, selectedRepo, selectedBranch);
+        // Create and deploy from GitHub repo (NEW: GitHub Actions approach)
+        result = await deployFromRepo(selectedProvider, providerToken, selectedRepo, selectedBranch);
       } else {
         result = { success: false, error: 'No deployment target selected. Select a project or GitHub repo.' };
       }
 
-      setDeployResult(result);
+      // If the deployment uses GitHub Actions monitoring, start it
+      if (result.workflowUrl && result.owner && result.repo && result.workflowFile) {
+        setDeployResult({
+          success: result.success,
+          url: result.url,
+          message: result.message,
+          workflowUrl: result.workflowUrl,
+        });
+        setIsDeploying(false);
+        startMonitoring(result.owner, result.repo, result.workflowFile);
+        return;
+      }
+
+      setDeployResult({
+        success: result.success,
+        url: result.url,
+        error: result.error,
+        message: result.message,
+        workflowUrl: result.workflowUrl,
+      });
       setStep('result');
     } catch (err) {
       setDeployResult({
@@ -283,7 +417,6 @@ export default function GlassDeployNotification({
   const triggerRedeploy = async (provider: ProviderConfig, token: string, itemId: string) => {
     if (provider.id === 'vercel') {
       const data = await deployVercel(token, { projectId: itemId }) as Record<string, unknown>;
-      // Vercel returns url from our fixed route
       const url = (data.url as string) || (data.alias as string[])?.[0] || '';
       return { success: true, url };
     } else if (provider.id === 'netlify') {
@@ -292,8 +425,6 @@ export default function GlassDeployNotification({
       return { success: true, url };
     } else if (provider.id === 'render') {
       const data = await deployRender(token, { serviceId: itemId }) as Record<string, unknown>;
-      // For Render, the deploy endpoint may not return the service URL directly
-      // Find the saved host item URL as fallback
       const savedItem = hostItems.find(h => h.id === itemId);
       const url = (data.url as string) || savedItem?.url || '';
       return { success: true, url };
@@ -301,10 +432,27 @@ export default function GlassDeployNotification({
       const [owner, repo] = itemId.split('/');
       const data = await deployPages(token, { owner, repo, branch: selectedBranch }) as Record<string, unknown>;
       const url = (data.url as string) || `https://${owner}.github.io/${repo}/`;
-      return { success: true, url };
-    } else {
-      return { success: false, error: 'Redeploy not supported for this provider' };
+      // GitHub Pages also supports monitoring
+      if (data.workflow_url && owner && repo) {
+        return {
+          success: !!(data.success),
+          url: data.url as string || url,
+          message: data.message as string,
+          workflowUrl: data.workflow_url as string,
+          owner,
+          repo,
+          workflowFile: 'deploy-pages.yml',
+          error: data.success ? undefined : (data.error as string) || 'GitHub Pages deployment failed',
+        };
+      }
+      return {
+        success: !!(data.success),
+        url: data.url as string || url,
+        message: data.message as string,
+        error: data.success ? undefined : (data.error as string) || 'GitHub Pages deployment failed',
+      };
     }
+    return { success: false, error: 'Redeploy not supported for this provider' };
   };
 
   const deployFromRepo = async (
@@ -316,6 +464,7 @@ export default function GlassDeployNotification({
     const [owner, repo] = repoFullName.split('/');
 
     if (provider.id === 'vercel') {
+      // Vercel: Direct API (works reliably)
       const data = await createVercelProject(token, {
         name: repo,
         repoOwner: owner,
@@ -323,16 +472,48 @@ export default function GlassDeployNotification({
         branch,
       }) as Record<string, unknown>;
       const url = (data.url as string) || (data.alias as string[])?.[0] || `https://${repo}-vercel.app`;
-      return { success: true, url };
+      return { success: true, url, message: 'Vercel project created and deploying.' };
     } else if (provider.id === 'netlify') {
-      // Cross-system: pass githubToken so API can resolve repo to numeric ID
+      // Netlify: NEW - GitHub Actions workflow approach
       const data = await createNetlifySite(token, {
-        name: repo,
+        name: repoFullName, // Pass owner/repo format for workflow push
         repoUrl: `https://github.com/${owner}/${repo}`,
         branch,
       }, githubToken) as Record<string, unknown>;
+
       const url = (data.url as string) || (data.ssl_url as string) || '';
-      const message = data.message as string | undefined;
+      const message = data.message as string;
+      const workflowUrl = data.workflow_url as string;
+      const workflowTriggered = data.workflow_triggered as boolean;
+      const secretsSet = data.secrets_set as boolean;
+
+      // Return monitoring info if workflow was triggered
+      if (workflowTriggered && secretsSet) {
+        return {
+          success: true,
+          url,
+          message,
+          workflowUrl,
+          owner,
+          repo,
+          workflowFile: 'deploy-netlify.yml',
+        };
+      }
+
+      // Secrets set but workflow not triggered (edge case)
+      if (secretsSet) {
+        return {
+          success: true,
+          url,
+          message,
+          workflowUrl,
+          owner,
+          repo,
+          workflowFile: 'deploy-netlify.yml',
+        };
+      }
+
+      // Fallback: secrets not set, return with manual instructions
       return { success: true, url, message };
     } else if (provider.id === 'render') {
       const data = await createRenderService(token, {
@@ -342,19 +523,39 @@ export default function GlassDeployNotification({
         runtime: 'node',
       }) as Record<string, unknown>;
       const url = (data.url as string) || (data.serviceDetails as Record<string, string>)?.url || '';
-      return { success: true, url };
+      return { success: true, url, message: 'Render service created. It will auto-deploy from your GitHub repo.' };
     } else if (provider.id === 'github-pages') {
-      const data = await deployPages(token, { owner, repo, branch }) as Record<string, unknown>;
+      // GitHub Pages: NEW - GitHub Actions workflow approach
+      const data = await deployPages(githubToken || '', { owner, repo, branch }) as Record<string, unknown>;
       const url = (data.url as string) || `https://${owner}.github.io/${repo}/`;
-      const message = data.message as string | undefined;
-      const success = !!(data.success);
-      return { success, url, message, error: success ? undefined : (data.error as string) || 'GitHub Pages deployment failed' };
+      const message = data.message as string;
+      const workflowUrl = data.workflow_url as string;
+      const workflowTriggered = data.workflow_triggered as boolean;
+      const pagesEnabled = data.pages_enabled as boolean;
+
+      if (workflowTriggered && pagesEnabled) {
+        return {
+          success: true,
+          url,
+          message,
+          workflowUrl,
+          owner,
+          repo,
+          workflowFile: 'deploy-pages.yml',
+        };
+      }
+
+      return {
+        success: !!(data.success),
+        url,
+        message,
+        error: data.success ? undefined : (data.error as string) || 'GitHub Pages setup failed',
+      };
     }
 
     return { success: false, error: 'Unsupported provider' };
   };
 
-  // currentProvider is always selectedProvider since it was set from the providers list
   const currentProvider = selectedProvider;
 
   // Determine if deploy button should be enabled
@@ -374,7 +575,6 @@ export default function GlassDeployNotification({
             <div className="flex items-center gap-2">
               <Globe className="w-4 h-4 text-[#00E5FF]" />
               <h2 className="text-sm font-semibold text-[#E0F7FA]">Deploy</h2>
-              {/* Step indicator */}
               <span className="text-[10px] text-[#547B88] ml-2">
                 {step.replace(/-/g, ' ')}
               </span>
@@ -403,7 +603,7 @@ export default function GlassDeployNotification({
                 <div className="p-4 space-y-3">
                   <p className="text-xs text-[#547B88]">Select a deployment provider</p>
                   {providers.map((provider) => {
-                    const hasToken = !!localStorage.getItem(provider.storageKey);
+                    const hasToken = !provider.requiresProviderToken || !!localStorage.getItem(provider.storageKey);
                     const Icon = provider.icon;
                     return (
                       <button
@@ -658,6 +858,16 @@ export default function GlassDeployNotification({
                           {itemTab === 'host' ? 'Redeploy existing' : 'Create & deploy new'}
                         </span>
                       </div>
+                      {(currentProvider.id === 'netlify' || currentProvider.id === 'github-pages') && itemTab === 'github' && (
+                        <div className="mt-2 p-2 rounded-lg bg-[#00E5FF]/5 border border-[#00E5FF]/10">
+                          <div className="flex items-center gap-1.5">
+                            <Zap className="w-3 h-3 text-[#00E5FF]" />
+                            <span className="text-[10px] text-[#00E5FF]">
+                              Deploys via GitHub Actions (auto-build + deploy)
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <Button
@@ -671,12 +881,94 @@ export default function GlassDeployNotification({
                 </div>
               )}
 
-              {/* Deploying */}
+              {/* Deploying (initial) */}
               {step === 'deploying' && (
                 <div className="p-8 text-center">
                   <Loader2 className="w-8 h-8 text-[#00E5FF] animate-spin mx-auto mb-3" />
-                  <p className="text-sm text-[#E0F7FA]">Deploying...</p>
-                  <p className="text-xs text-[#547B88] mt-1">This may take a moment</p>
+                  <p className="text-sm text-[#E0F7FA]">Preparing deployment...</p>
+                  <p className="text-xs text-[#547B88] mt-1">Setting up workflow and secrets</p>
+                </div>
+              )}
+
+              {/* Monitoring (GitHub Actions progress) */}
+              {step === 'monitoring' && deploymentStatus && (
+                <div className="p-6 space-y-4">
+                  <div className="text-center space-y-3">
+                    {(deploymentStatus.status === 'queued' || deploymentStatus.status === 'running') ? (
+                      <>
+                        <div className="w-14 h-14 rounded-full bg-[#00E5FF]/10 flex items-center justify-center mx-auto border border-[#00E5FF]/20">
+                          <Loader2 className="w-7 h-7 text-[#00E5FF] animate-spin" />
+                        </div>
+                        <h3 className="text-sm font-semibold text-[#E0F7FA]">
+                          {deploymentStatus.status === 'queued' ? 'Queued...' : 'Deploying...'}
+                        </h3>
+                        <p className="text-xs text-[#547B88]">{deploymentStatus.message}</p>
+                      </>
+                    ) : deploymentStatus.status === 'success' ? (
+                      <>
+                        <div className="w-14 h-14 rounded-full bg-[#00E676]/10 flex items-center justify-center mx-auto border border-[#00E676]/20">
+                          <CheckCircle2 className="w-7 h-7 text-[#00E676]" />
+                        </div>
+                        <h3 className="text-sm font-semibold text-[#00E676]">Deployed!</h3>
+                        <p className="text-xs text-[#547B88]">Redirecting to results...</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-14 h-14 rounded-full bg-[#FF2A5F]/10 flex items-center justify-center mx-auto border border-[#FF2A5F]/20">
+                          <X className="w-7 h-7 text-[#FF2A5F]" />
+                        </div>
+                        <h3 className="text-sm font-semibold text-[#FF2A5F]">Failed</h3>
+                        <p className="text-xs text-[#547B88]">{deploymentStatus.message}</p>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Deployment timeline */}
+                  <div className="glass-card p-3 space-y-2">
+                    <div className="flex items-center gap-2 text-[10px] text-[#547B88]">
+                      <FileCode className="w-3 h-3" />
+                      <span>Workflow file pushed to repo</span>
+                      <CheckCircle2 className="w-3 h-3 text-[#00E676] ml-auto" />
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[#547B88]">
+                      <Key className="w-3 h-3" />
+                      <span>Secrets configured (encrypted)</span>
+                      <CheckCircle2 className="w-3 h-3 text-[#00E676] ml-auto" />
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[#547B88]">
+                      <Zap className="w-3 h-3" />
+                      <span>GitHub Actions workflow</span>
+                      {(deploymentStatus.status === 'running' || deploymentStatus.status === 'success') ? (
+                        <Loader2 className="w-3 h-3 text-[#00E5FF] animate-spin ml-auto" />
+                      ) : deploymentStatus.status === 'queued' ? (
+                        <Clock className="w-3 h-3 text-[#FFB74D] ml-auto" />
+                      ) : (
+                        <span className="ml-auto text-[#547B88]">{deploymentStatus.status}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[#547B88]">
+                      <Globe className="w-3 h-3" />
+                      <span>Site live</span>
+                      {deploymentStatus.status === 'success' ? (
+                        <CheckCircle2 className="w-3 h-3 text-[#00E676] ml-auto" />
+                      ) : (
+                        <span className="w-3 h-3 ml-auto" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Link to workflow */}
+                  {deploymentStatus.html_url && (
+                    <a
+                      href={deploymentStatus.html_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-1.5 text-[10px] text-[#00E5FF] hover:underline"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View workflow on GitHub
+                    </a>
+                  )}
                 </div>
               )}
 
@@ -702,7 +994,7 @@ export default function GlassDeployNotification({
                           </a>
                         )}
                         {deployResult.message && (
-                          <p className="text-[10px] text-[#547B88] mt-1.5 max-w-[280px] mx-auto leading-relaxed">{deployResult.message}</p>
+                          <p className="text-[10px] text-[#547B88] mt-1.5 max-w-[300px] mx-auto leading-relaxed">{deployResult.message}</p>
                         )}
                       </div>
                     </>
@@ -717,28 +1009,44 @@ export default function GlassDeployNotification({
                       </div>
                     </>
                   )}
+
+                  {/* Workflow link on result page too */}
+                  {deployResult.workflowUrl && (
+                    <a
+                      href={deployResult.workflowUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-[10px] text-[#00E5FF] hover:underline"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View on GitHub Actions
+                    </a>
+                  )}
+
                   <div className="flex gap-2">
-                    {deployResult.success && (
+                    {deployResult.success ? (
                       <Button
                         onClick={handleClose}
                         className="flex-1 h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl"
                       >
                         Done
                       </Button>
-                    )}
-                    <Button
-                      onClick={() => {
-                        if (deployResult.success) {
-                          handleClose();
-                        } else {
-                          // Go back to confirm to retry
+                    ) : (
+                      <Button
+                        onClick={() => {
                           setDeployResult(null);
                           setStep('confirm');
-                        }
-                      }}
+                        }}
+                        className="w-full h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl"
+                      >
+                        Go Back & Retry
+                      </Button>
+                    )}
+                    <Button
+                      onClick={handleClose}
                       className={`${deployResult.success ? 'flex-1' : 'w-full'} h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl`}
                     >
-                      {deployResult.success ? 'Deploy Another' : 'Go Back & Retry'}
+                      {deployResult.success ? 'Deploy Another' : 'Close'}
                     </Button>
                   </div>
                 </div>
@@ -746,8 +1054,8 @@ export default function GlassDeployNotification({
             </motion.div>
           </AnimatePresence>
 
-          {/* Back button (not on first or last step) */}
-          {step !== 'select-provider' && step !== 'result' && step !== 'deploying' && (
+          {/* Back button */}
+          {step !== 'select-provider' && step !== 'result' && step !== 'deploying' && step !== 'monitoring' && (
             <div className="px-5 py-3 border-t border-[#00E5FF]/10 shrink-0">
               <Button
                 variant="ghost"
