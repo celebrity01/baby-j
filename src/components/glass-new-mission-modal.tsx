@@ -3,12 +3,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   X, Rocket, Search, ChevronDown, Globe, Server,
-  Github, Loader2,
+  Github, Loader2, Lock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -46,7 +45,6 @@ export default function GlassNewMissionModal({
   const [objective, setObjective] = useState('');
   const [selectedRepo, setSelectedRepo] = useState('');
   const [selectedBranch, setSelectedBranch] = useState('');
-  const [mode, setMode] = useState<string>('MANUAL');
   const [requireApproval, setRequireApproval] = useState(true);
   const [deploy, setDeploy] = useState({
     vercel: false,
@@ -61,25 +59,27 @@ export default function GlassNewMissionModal({
   const [isLaunching, setIsLaunching] = useState(false);
   const [repoSearch, setRepoSearch] = useState('');
   const [showRepoDropdown, setShowRepoDropdown] = useState(false);
+  const [showAllBranches, setShowAllBranches] = useState(false);
 
   // Load GitHub repos when modal opens
+  const loadRepos = useCallback(async () => {
+    if (!githubToken) return;
+    setIsLoadingRepos(true);
+    try {
+      const r = await listGitHubRepos(githubToken);
+      setRepos(r);
+    } catch (err) {
+      console.error('Failed to load repos:', err);
+    } finally {
+      setIsLoadingRepos(false);
+    }
+  }, [githubToken]);
+
   useEffect(() => {
     if (isOpen && githubToken) {
       loadRepos();
     }
-  }, [isOpen, githubToken]);
-
-  const loadRepos = async () => {
-    setIsLoadingRepos(true);
-    try {
-      const r = await listGitHubRepos(githubToken!);
-      setRepos(r);
-    } catch {
-      // Silently fail
-    } finally {
-      setIsLoadingRepos(false);
-    }
-  };
+  }, [isOpen, githubToken, loadRepos]);
 
   // Load branches when repo is selected
   useEffect(() => {
@@ -97,18 +97,15 @@ export default function GlassNewMissionModal({
           setBranches(b);
           const defaultBranch = b.find((br) => br.default) || b[0];
           if (defaultBranch) setSelectedBranch(defaultBranch.name);
-          else if (b.length > 0) setSelectedBranch(b[0].name);
         }
-      } catch {
-        // Silently fail
+      } catch (err) {
+        console.error('Failed to load branches:', err);
       } finally {
         setIsLoadingBranches(false);
       }
     };
     loadBranches();
   }, [selectedRepo, githubToken]);
-
-  const selectedRepoObj = repos.find((r) => r.full_name === selectedRepo);
 
   const handleLaunch = async () => {
     if (!objective.trim()) return;
@@ -139,11 +136,6 @@ export default function GlassNewMissionModal({
         };
       }
 
-      // Set automation mode based on approval toggle
-      if (!requireApproval) {
-        params.executionMode = 'AUTO_PR';
-      }
-
       const session = await createSession(apiKey, params);
       onMissionCreated(session.sessionId || '');
       handleClose();
@@ -159,10 +151,11 @@ export default function GlassNewMissionModal({
     setObjective('');
     setSelectedRepo('');
     setSelectedBranch('');
-    setMode('MANUAL');
     setRequireApproval(true);
     setDeploy({ vercel: false, netlify: false, render: false, githubPages: false });
     setRepoSearch('');
+    setShowRepoDropdown(false);
+    setShowAllBranches(false);
     onClose();
   };
 
@@ -182,6 +175,8 @@ export default function GlassNewMissionModal({
     default_branch: s.repository?.defaultBranch || '',
     owner: { login: '' },
   }));
+
+  const visibleBranches = showAllBranches ? branches : branches.slice(0, 5);
 
   return (
     <Dialog open={isOpen} onOpenChange={() => handleClose()}>
@@ -236,6 +231,7 @@ export default function GlassNewMissionModal({
               <div className="relative">
                 <Label className="text-xs text-[#547B88] mb-1.5 block">Context Target *</Label>
                 <button
+                  type="button"
                   onClick={() => setShowRepoDropdown(!showRepoDropdown)}
                   className="glass-input w-full h-10 text-sm text-left px-3 flex items-center justify-between"
                 >
@@ -277,9 +273,11 @@ export default function GlassNewMissionModal({
                         {sourceRepos.map((s) => (
                           <button
                             key={`source-${s.full_name}`}
+                            type="button"
                             onClick={() => {
                               setSelectedRepo(s.full_name);
                               setShowRepoDropdown(false);
+                              setShowAllBranches(false);
                             }}
                             className={`w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-[#00E5FF]/10 transition-colors flex items-center justify-between ${
                               selectedRepo === s.full_name ? 'bg-[#00E5FF]/10 text-[#00E5FF]' : 'text-[#E0F7FA]'
@@ -305,9 +303,11 @@ export default function GlassNewMissionModal({
                         {filteredRepos.map((r) => (
                           <button
                             key={r.id}
+                            type="button"
                             onClick={() => {
                               setSelectedRepo(r.full_name);
                               setShowRepoDropdown(false);
+                              setShowAllBranches(false);
                             }}
                             className={`w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-[#00E5FF]/10 transition-colors ${
                               selectedRepo === r.full_name ? 'bg-[#00E5FF]/10 text-[#00E5FF]' : 'text-[#E0F7FA]'
@@ -335,68 +335,42 @@ export default function GlassNewMissionModal({
                     <div className="glass-input h-10 flex items-center px-3">
                       <Loader2 className="w-3 h-3 text-[#00E5FF] animate-spin" />
                     </div>
+                  ) : branches.length === 0 ? (
+                    <p className="text-xs text-[#547B88]">No branches found</p>
                   ) : (
-                    <div className="relative">
-                      <button
-                        onClick={() => setShowRepoDropdown(!showRepoDropdown)}
-                        className="glass-input w-full h-10 text-sm text-left px-3 flex items-center justify-between"
-                      >
-                        <span className="text-[#E0F7FA]">{selectedBranch || 'Select branch...'}</span>
-                        <ChevronDown className="w-4 h-4 text-[#547B88]" />
-                      </button>
-                      {branches.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {branches.slice(0, 5).map((b) => (
-                            <button
-                              key={b.name}
-                              onClick={() => setSelectedBranch(b.name)}
-                              className={`px-2.5 py-1 rounded-lg text-[10px] font-mono transition-colors ${
-                                selectedBranch === b.name
-                                  ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30'
-                                  : 'glass-input text-[#547B88]'
-                              }`}
-                            >
-                              {b.name}
-                              {b.protected && (
-                                <Badge className="ml-1 h-3 text-[7px] bg-[#B388FF]/15 text-[#B388FF] border-[#B388FF]/30">
-                                  protected
-                                </Badge>
-                              )}
-                            </button>
-                          ))}
-                        </div>
+                    <div className="flex flex-wrap gap-1">
+                      {visibleBranches.map((b) => (
+                        <button
+                          key={b.name}
+                          type="button"
+                          onClick={() => setSelectedBranch(b.name)}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-mono transition-colors ${
+                            selectedBranch === b.name
+                              ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30'
+                              : 'glass-input text-[#547B88]'
+                          }`}
+                        >
+                          {b.name}
+                          {b.protected && (
+                            <Badge className="ml-1 h-3 text-[7px] bg-[#B388FF]/15 text-[#B388FF] border-[#B388FF]/30">
+                              protected
+                            </Badge>
+                          )}
+                        </button>
+                      ))}
+                      {branches.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllBranches(!showAllBranches)}
+                          className="px-2.5 py-1 rounded-lg text-[10px] text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors"
+                        >
+                          {showAllBranches ? 'Show less' : `+${branches.length - 5} more`}
+                        </button>
                       )}
                     </div>
                   )}
                 </div>
               )}
-
-              {/* Mode */}
-              <div>
-                <Label className="text-xs text-[#547B88] mb-1.5 block">Mode</Label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setMode('MANUAL')}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${
-                      mode === 'MANUAL'
-                        ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30'
-                        : 'glass-input text-[#547B88]'
-                    }`}
-                  >
-                    Manual
-                  </button>
-                  <button
-                    onClick={() => setMode('AUTO_PR')}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${
-                      mode === 'AUTO_PR'
-                        ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30'
-                        : 'glass-input text-[#547B88]'
-                    }`}
-                  >
-                    Auto PR
-                  </button>
-                </div>
-              </div>
 
               {/* Deployment Config */}
               <div>
@@ -410,6 +384,7 @@ export default function GlassNewMissionModal({
                   ].map(({ key, label, icon: Icon }) => (
                     <button
                       key={key}
+                      type="button"
                       onClick={() => setDeploy((d) => ({ ...d, [key]: !d[key] }))}
                       className={`py-2 px-3 rounded-lg text-xs flex items-center gap-2 transition-all ${
                         deploy[key]
@@ -461,25 +436,5 @@ export default function GlassNewMissionModal({
         </motion.div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Lock({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-    </svg>
   );
 }

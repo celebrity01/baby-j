@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -18,16 +15,22 @@ export async function GET(req: NextRequest) {
       },
       cache: "no-store",
     });
-    const repos = await res.json();
+    const reposData = await res.json();
+    if (!res.ok) {
+      const message = reposData?.message || reposData?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+
+    const repos = Array.isArray(reposData) ? reposData : [];
 
     // Check each repo for Pages status
     const pagesSites = await Promise.allSettled(
-      (repos || [])
+      repos
         .filter((r: { has_pages?: boolean }) => r.has_pages)
         .slice(0, 20)
         .map(async (repo: { name: string; owner: { login: string }; html_url: string }) => {
           const pagesRes = await fetch(
-            `https://api.github.com/repos/${repo.owner.login}/${repo.name}/pages`,
+            `https://api.github.com/repos/${encodeURIComponent(repo.owner.login)}/${encodeURIComponent(repo.name)}/pages`,
             {
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -50,6 +53,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(sites);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("GitHub Pages sites error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

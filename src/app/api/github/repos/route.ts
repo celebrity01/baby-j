@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue, clampParam } from "@/lib/api-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,12 +8,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Missing X-GitHub-Token header" }, { status: 401 });
     }
     const url = new URL(req.url);
-    const page = url.searchParams.get("page") || "1";
-    const perPage = url.searchParams.get("per_page") || "100";
+    const page = clampParam(url.searchParams.get("page"), 1, 100, 1);
+    const perPage = clampParam(url.searchParams.get("per_page"), 1, 100, 100);
     const sort = url.searchParams.get("sort") || "updated";
 
     const res = await fetch(
-      `https://api.github.com/user/repos?page=${page}&per_page=${perPage}&sort=${sort}&type=all`,
+      `https://api.github.com/user/repos?page=${encodeURIComponent(page)}&per_page=${encodeURIComponent(perPage)}&sort=${encodeURIComponent(sort)}&type=all`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -26,8 +23,13 @@ export async function GET(req: NextRequest) {
       }
     );
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("GitHub repos error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

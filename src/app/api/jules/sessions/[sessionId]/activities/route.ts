@@ -1,19 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
-
-function getJulesHeaders(req: NextRequest): HeadersInit {
-  const apiKey = req.headers.get("X-Jules-Api-Key") || "";
-  const sanitized = sanitizeHeaderValue(apiKey);
-  if (sanitized.startsWith("ya29.")) {
-    return { Authorization: `Bearer ${sanitized}` };
-  }
-  return { "X-Goog-Api-Key": sanitized };
-}
-
-const JULES_BASE = "https://jules.googleapis.com/v1alpha";
+import { getJulesHeaders, JULES_BASE, clampParam } from "@/lib/api-utils";
 
 export async function GET(
   req: NextRequest,
@@ -23,18 +9,23 @@ export async function GET(
     const { sessionId } = await params;
     const headers = getJulesHeaders(req);
     const url = new URL(req.url);
-    const pageSize = url.searchParams.get("pageSize") || "100";
+    const pageSize = clampParam(url.searchParams.get("pageSize"), 1, 100, 100);
     const pageToken = url.searchParams.get("pageToken");
-    let fetchUrl = `${JULES_BASE}/sessions/${sessionId}/activities?pageSize=${pageSize}`;
-    if (pageToken) fetchUrl += `&pageToken=${pageToken}`;
+    let fetchUrl = `${JULES_BASE}/sessions/${encodeURIComponent(sessionId)}/activities?pageSize=${encodeURIComponent(pageSize)}`;
+    if (pageToken) fetchUrl += `&pageToken=${encodeURIComponent(pageToken)}`;
 
     const res = await fetch(fetchUrl, {
       headers,
       cache: "no-store",
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.error?.message || data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Jules session activities error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

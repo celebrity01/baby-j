@@ -1,19 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
-
-function getJulesHeaders(req: NextRequest): HeadersInit {
-  const apiKey = req.headers.get("X-Jules-Api-Key") || "";
-  const sanitized = sanitizeHeaderValue(apiKey);
-  if (sanitized.startsWith("ya29.")) {
-    return { Authorization: `Bearer ${sanitized}` };
-  }
-  return { "X-Goog-Api-Key": sanitized };
-}
-
-const JULES_BASE = "https://jules.googleapis.com/v1alpha";
+import { getJulesHeaders, JULES_BASE } from "@/lib/api-utils";
 
 export async function POST(
   req: NextRequest,
@@ -23,7 +9,7 @@ export async function POST(
     const { sessionId } = await params;
     const headers = getJulesHeaders(req);
     const body = await req.json();
-    const res = await fetch(`${JULES_BASE}/sessions/${sessionId}/message`, {
+    const res = await fetch(`${JULES_BASE}/sessions/${encodeURIComponent(sessionId)}/message`, {
       method: "POST",
       headers: {
         ...headers,
@@ -32,8 +18,13 @@ export async function POST(
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.error?.message || data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Jules session message error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

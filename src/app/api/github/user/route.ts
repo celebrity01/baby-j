@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -18,8 +15,13 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("GitHub user error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

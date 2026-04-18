@@ -3,20 +3,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ArrowLeft, Bot, User, ThumbsUp, ExternalLink,
-  GitPullRequest, MoreVertical, Send, ChevronDown,
-  ChevronUp, Loader2, Sparkles, Terminal, FileCode, Globe,
+  GitPullRequest, Send, ChevronDown,
+  ChevronUp, Loader2, Sparkles, FileCode,
   CheckCircle2, XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { JulesSession, JulesActivity } from '@/lib/jules-client';
 
@@ -118,6 +111,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
             {activity.plan?.steps && activity.plan.steps.length > 0 && (
               <div>
                 <button
+                  type="button"
                   onClick={() => setExpanded(!expanded)}
                   className="flex items-center gap-1 text-xs text-[#547B88] hover:text-[#E0F7FA] transition-colors"
                 >
@@ -134,7 +128,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
                     >
                       <ol className="mt-2 space-y-1">
                         {activity.plan.steps.map((step, i) => (
-                          <li key={i} className="text-xs text-[#547B88] flex gap-2">
+                          <li key={`step-${i}-${step.description.substring(0, 32)}`} className="text-xs text-[#547B88] flex gap-2">
                             <span className="text-[#B388FF] font-mono shrink-0">{i + 1}.</span>
                             <span>{step.description}</span>
                           </li>
@@ -171,7 +165,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
           className="flex gap-2.5 items-start max-w-[90%]"
         >
           <div className="w-7 h-7 rounded-lg bg-[#00E5FF]/10 flex items-center justify-center shrink-0 mt-1">
-            <Loader2 className="w-3.5 h-3.5 text-[#00E5FF] animate-spin" />
+            <Loader2 className="w-3 h-3 text-[#00E5FF] animate-spin" />
           </div>
           <div className="glass-card px-3.5 py-2.5">
             <p className="text-xs text-[#547B88] mb-1">
@@ -241,6 +235,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
                 )}
                 {activity.bashOutput && (
                   <button
+                    type="button"
                     onClick={() => setExpanded(!expanded)}
                     className="text-[10px] text-[#547B88] hover:text-[#E0F7FA] transition-colors flex items-center gap-1 mb-1"
                   >
@@ -268,6 +263,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
           >
             <div className="glass-card p-0 overflow-hidden">
               <button
+                type="button"
                 onClick={() => setExpanded(!expanded)}
                 className="w-full flex items-center justify-between px-3.5 py-2.5 border-b border-[#00E5FF]/10 hover:bg-white/[0.02] transition-colors"
               >
@@ -286,7 +282,7 @@ function ActivityBubble({ activity, onApprove }: { activity: JulesActivity; onAp
                     className="overflow-hidden max-h-80 overflow-y-auto"
                   >
                     {activity.codeChanges.patches.map((patch, i) => (
-                      <div key={i} className="border-b border-[#00E5FF]/5 last:border-0">
+                      <div key={`patch-${i}-${patch.filename}`} className="border-b border-[#00E5FF]/5 last:border-0">
                         <div className="px-3.5 py-1.5 bg-white/[0.02]">
                           <span className="text-[10px] text-[#547B88] font-mono">{patch.filename}</span>
                         </div>
@@ -327,13 +323,28 @@ export default function GlassChatView({
   const [message, setMessage] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const isNearBottomRef = useRef(true);
 
   const isActive = session?.state === 'RUNNING' || session?.state === 'AWAITING';
   const needsApproval = session?.state === 'AWAITING';
 
-  // Auto scroll
+  // Track if user is near bottom before auto-scrolling
   useEffect(() => {
-    if (scrollRef.current) {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const handleScroll = () => {
+      const threshold = 100;
+      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Auto scroll only if user is near bottom
+  useEffect(() => {
+    if (scrollRef.current && isNearBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [activities]);
@@ -344,6 +355,12 @@ export default function GlassChatView({
     try {
       await onSendMessage(message.trim());
       setMessage('');
+      // Force scroll to bottom after sending
+      setTimeout(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, 100);
     } finally {
       setSendingMessage(false);
     }
@@ -360,7 +377,7 @@ export default function GlassChatView({
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
-      className="flex flex-col h-screen"
+      className="flex flex-col h-dvh"
     >
       {/* Header */}
       <div className="glass-nav sticky top-0 z-20 px-4 py-3">
@@ -370,6 +387,7 @@ export default function GlassChatView({
               variant="ghost"
               size="icon"
               onClick={onBack}
+              aria-label="Go back to threads"
               className="text-[#547B88] hover:text-[#E0F7FA] hover:bg-white/5 shrink-0"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -393,14 +411,14 @@ export default function GlassChatView({
               </Button>
             )}
             {session?.pullRequestUrl && (
-              <a href={session.pullRequestUrl} target="_blank" rel="noopener noreferrer">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-[#547B88] hover:text-[#00E676] hover:bg-[#00E676]/10"
-                >
-                  <GitPullRequest className="w-4 h-4" />
-                </Button>
+              <a
+                href={session.pullRequestUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open pull request"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-md text-[#547B88] hover:text-[#00E676] hover:bg-[#00E676]/10 transition-colors"
+              >
+                <GitPullRequest className="w-4 h-4" />
               </a>
             )}
             {session?.sessionId && (
@@ -408,14 +426,10 @@ export default function GlassChatView({
                 href={`https://jules.google/sessions/${session.sessionId}`}
                 target="_blank"
                 rel="noopener noreferrer"
+                aria-label="Open session on Jules"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-md text-[#547B88] hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors"
               >
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-[#547B88] hover:text-[#00E5FF] hover:bg-[#00E5FF]/10"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                </Button>
+                <ExternalLink className="w-4 h-4" />
               </a>
             )}
           </div>
@@ -450,7 +464,7 @@ export default function GlassChatView({
         ) : (
           activities.map((activity, index) => (
             <ActivityBubble
-              key={index}
+              key={`activity-${index}`}
               activity={activity}
               onApprove={needsApproval ? onApprovePlan : undefined}
             />
@@ -458,7 +472,7 @@ export default function GlassChatView({
         )}
       </div>
 
-      {/* Approval Banner + Message Input (always visible during AWAITING) */}
+      {/* Approval Banner */}
       {needsApproval && (
         <motion.div
           initial={{ y: 100 }}
@@ -483,33 +497,33 @@ export default function GlassChatView({
         </motion.div>
       )}
 
-      {/* Message Input — always visible */}
-      {(isActive || session?.state === 'COMPLETED' || session?.state === 'FAILED' || !session) && (
-        <div className="glass-nav px-4 py-3">
-          <div className="flex items-end gap-2 max-w-3xl mx-auto">
-            <Textarea
-              placeholder={needsApproval ? "Suggest changes to the plan, add or remove instructions..." : "Send a message to the agent..."}
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="glass-input min-h-[40px] max-h-32 resize-none text-sm py-2.5"
-              rows={1}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!message.trim() || sendingMessage}
-              size="icon"
-              className="w-10 h-10 rounded-xl bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] shrink-0"
-            >
-              {sendingMessage ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-            </Button>
-          </div>
+      {/* Message Input */}
+      <div className="glass-nav px-4 py-3">
+        <div className="flex items-end gap-2 max-w-3xl mx-auto">
+          <Textarea
+            placeholder={needsApproval ? "Suggest changes to the plan, add or remove instructions..." : "Send a message to the agent..."}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            className="glass-input min-h-[40px] max-h-32 resize-none text-sm py-2.5"
+            rows={1}
+            aria-label="Chat message"
+          />
+          <Button
+            onClick={handleSend}
+            disabled={!message.trim() || sendingMessage}
+            size="icon"
+            aria-label="Send message"
+            className="w-10 h-10 rounded-xl bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] shrink-0"
+          >
+            {sendingMessage ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
+          </Button>
         </div>
-      )}
+      </div>
     </motion.div>
   );
 }

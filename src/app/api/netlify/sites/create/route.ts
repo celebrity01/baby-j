@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +9,10 @@ export async function POST(req: NextRequest) {
     }
     const body = await req.json();
     const { name, repoUrl, branch } = body;
+
+    if (!name) {
+      return NextResponse.json({ error: "Missing site name" }, { status: 400 });
+    }
 
     const res = await fetch("https://api.netlify.com/api/v1/sites", {
       method: "POST",
@@ -32,8 +33,13 @@ export async function POST(req: NextRequest) {
       }),
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Netlify site create error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
