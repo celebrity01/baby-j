@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sanitizeHeaderValue } from "@/lib/api-utils";
+import { deploymentEngine } from "@/lib/deployment/engine";
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,30 +15,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing serviceId in request body" }, { status: 400 });
     }
 
-    const res = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/deploys`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ clearCache: "dont_clear" }),
-    });
+    const result = await deploymentEngine.deploy('render', token, { serviceId });
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      const message = data?.message || data?.error || `Render deploy failed: ${res.status}`;
-      return NextResponse.json({ error: message }, { status: res.status });
+    if (!result.success) {
+      return NextResponse.json({ error: result.message }, { status: 500 });
     }
 
-    // Render returns the deploy object — the service URL comes from the service itself
-    const url = data?.deploy?.liveUrl || data?.liveUrl;
-
-    return NextResponse.json({
-      ...data,
-      url,
-    });
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Render deploy error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
