@@ -153,8 +153,9 @@ export async function createOrUpdateRepoFile(
     return { success: false, error: `Failed to create file (${res.status}): ${errText.substring(0, 300)}` };
   }
 
-  const data = await res.json() as Record<string, unknown>;
-  return { success: true, sha: data.content?.sha as string };
+  const responseData = await res.json() as Record<string, unknown>;
+  const contentObj = responseData.content as Record<string, unknown> | undefined;
+  return { success: true, sha: (contentObj?.sha as string) || undefined };
 }
 
 /**

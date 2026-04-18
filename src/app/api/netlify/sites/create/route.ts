@@ -1,70 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sanitizeHeaderValue } from "@/lib/api-utils";
-import {
-  setRepoSecret,
-  createOrUpdateRepoFile,
-  triggerWorkflowDispatch,
-  getLatestWorkflowRun,
-} from "@/lib/github-secrets";
 
 /**
- * Create a Netlify site and deploy via GitHub Actions.
+ * NETLIFY — Create Site API Route
  *
- * NEW ARCHITECTURE:
- * 1. Create a bare Netlify site (simple API call, always works)
- * 2. Push a GitHub Actions workflow file to the user's repo
- * 3. Store NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID as encrypted repo secrets
- * 4. Trigger the workflow via workflow_dispatch
- * 5. Return both the Netlify site URL and the GitHub Actions run URL
+ * Based on official Netlify API documentation:
+ * https://docs.netlify.com/api-and-cli-guides/api-guides/get-started-with-api/
  *
- * This bypasses the Netlify GitHub App requirement entirely.
- * GitHub Actions handles the build + deploy automatically.
+ * APPROACH:
+ * 1. Create a bare Netlify site (POST /api/v1/sites with { name })
+ *    - Bare site creation ALWAYS works with a valid PAT
+ *    - No repo linking — avoids 422 errors entirely
+ *
+ * 2. Configure build settings (PATCH /api/v1/sites/{id})
+ *    - Sets branch, build command, publish directory
+ *
+ * 3. Return site URL + admin URL for manual repo connection
+ *    - The user connects their GitHub repo in the Netlify dashboard
+ *    - Netlify automatically builds on push once connected
  */
 export async function POST(req: NextRequest) {
   try {
-    const netlifyToken = sanitizeHeaderValue(req.headers.get("X-Netlify-Token") || "");
-    if (!netlifyToken) {
+    const token = sanitizeHeaderValue(req.headers.get("X-Netlify-Token") || "");
+    if (!token) {
       return NextResponse.json(
         { error: "Netlify token required. Add your token in Settings." },
         { status: 401 }
       );
     }
 
-    const githubToken = sanitizeHeaderValue(req.headers.get("X-GitHub-Token") || "");
-    if (!githubToken) {
-      return NextResponse.json(
-        { error: "GitHub token required. Connect GitHub in Settings." },
-        { status: 401 }
-      );
-    }
-
     const body = await req.json();
-    const { name, branch } = body;
-    const siteBranch = branch || "main";
-
-    if (!name) {
-      return NextResponse.json(
-        { error: "Repository name is required." },
-        { status: 400 }
-      );
-    }
-
-    // ── Step 1: Create bare Netlify site ──
-    const baseName = name
-      .replace(/[^a-zA-Z0-9]/g, "")
+    const { name, repoUrl, branch } = body;
+    const siteName = (name || "my-site")
+      .replace(/[^a-zA-Z0-9\-]/g, "")
       .toLowerCase()
-      .substring(0, 30);
-    const uniqueName = `${baseName}-${crypto.randomUUID().split("-")[0]}`;
+      .substring(0, 50);
 
-    console.log(`[Netlify] Creating site: ${uniqueName}`);
+    // ─────────────────────────────────────────────
+    // Step 1: Create bare Netlify site
+    // ─────────────────────────────────────────────
+    console.log(`[Netlify] Creating bare site: ${siteName}`);
 
     const createRes = await fetch("https://api.netlify.com/api/v1/sites", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${netlifyToken}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ name: uniqueName }),
+      body: JSON.stringify({ name: siteName }),
     });
 
     if (!createRes.ok) {
@@ -75,159 +58,77 @@ export async function POST(req: NextRequest) {
         errMsg = j.message || j.error || errMsg;
       } catch { /* keep raw */ }
       console.error(`[Netlify] Site creation failed (${createRes.status}):`, errMsg);
-      return NextResponse.json(
-        { error: `Netlify rejected site creation (${createRes.status}): ${errMsg}. Check your Netlify token permissions.` },
-        { status: createRes.status }
-      );
+      return NextResponse.json({
+        error: `Netlify rejected site creation (${createRes.status}): ${errMsg}`,
+        hint: "Check that your Netlify token is valid and has site creation permissions.",
+      }, { status: createRes.status });
     }
 
     const site = (await createRes.json()) as Record<string, unknown>;
     const siteId = site.id as string;
-    const siteUrl = (site.ssl_url as string) || (site.url as string) || `https://${uniqueName}.netlify.app`;
+    const siteUrl = (site.ssl_url as string) || (site.url as string) || "";
+    const adminUrl = (site.admin_url as string) || `https://app.netlify.com/sites/${siteName}`;
 
     console.log(`[Netlify] Site created: id=${siteId}, url=${siteUrl}`);
 
-    // ── Step 2: Push GitHub Actions workflow file ──
-    const workflowPath = ".github/workflows/deploy-netlify.yml";
-    const workflowContent = generateNetlifyWorkflow(siteBranch);
-
-    console.log(`[Netlify] Pushing workflow to ${workflowPath}`);
-
-    const fileResult = await createOrUpdateRepoFile(
-      name.split("/")[0] || "",  // owner - fallback, will be overridden
-      name.split("/")[1] || name, // repo
-      workflowPath,
-      workflowContent,
-      "Add Netlify deployment workflow via Baby J",
-      siteBranch,
-      githubToken
-    );
-
-    // If the name contains a slash (owner/repo format), parse it
-    // Otherwise use the body's repoUrl or the name as-is
-    const repoUrl = body.repoUrl as string | undefined;
-    let owner: string;
-    let repo: string;
-
-    if (name.includes("/")) {
-      [owner, repo] = name.split("/");
-    } else if (repoUrl) {
-      const parts = repoUrl.replace(/\/$/, "").split("/");
-      owner = parts[parts.length - 2] || "";
-      repo = parts[parts.length - 1] || name;
-    } else {
-      owner = "";
-      repo = name;
-    }
-
-    if (!owner || !repo) {
-      return NextResponse.json({
-        id: siteId,
-        name: uniqueName,
-        url: siteUrl,
-        success: true,
-        message: `Netlify site created at ${siteUrl}. Could not determine repo owner/repo from "${name}". Please manually connect your repo in the Netlify dashboard.`,
-      });
-    }
-
-    // ── Step 3: Set encrypted GitHub secrets ──
-    console.log(`[Netlify] Setting secrets for ${owner}/${repo}`);
-
-    const [tokenSecret, siteSecret] = await Promise.all([
-      setRepoSecret(owner, repo, "NETLIFY_AUTH_TOKEN", netlifyToken, githubToken),
-      setRepoSecret(owner, repo, "NETLIFY_SITE_ID", siteId, githubToken),
-    ]);
-
-    if (!tokenSecret || !siteSecret) {
-      console.warn(`[Netlify] Some secrets failed to set. Token: ${tokenSecret}, Site: ${siteSecret}`);
-    }
-
-    // ── Step 4: Trigger workflow dispatch ──
-    let workflowUrl = "";
-    let workflowTriggered = false;
+    // ─────────────────────────────────────────────
+    // Step 2: Configure build settings
+    // ─────────────────────────────────────────────
+    const siteBranch = branch || "main";
+    let buildConfigured = false;
 
     try {
-      // Wait a moment for GitHub to register the new workflow file
-      await new Promise((r) => setTimeout(r, 2000));
-
-      workflowTriggered = await triggerWorkflowDispatch(
-        owner, repo, "deploy-netlify.yml", siteBranch, githubToken
+      const patchRes = await fetch(
+        `https://api.netlify.com/api/v1/sites/${encodeURIComponent(siteId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            build_settings: {
+              branch: siteBranch,
+              cmd: "npm run build",
+              dir: "out",
+            },
+          }),
+        }
       );
 
-      if (workflowTriggered) {
-        // Wait and fetch the run URL
-        await new Promise((r) => setTimeout(r, 3000));
-        const run = await getLatestWorkflowRun(owner, repo, "deploy-netlify.yml", githubToken);
-        if (run) {
-          workflowUrl = (run.html_url as string) || "";
-        }
+      buildConfigured = patchRes.ok;
+      if (!patchRes.ok) {
+        console.warn(`[Netlify] Build config failed (${patchRes.status})`);
       }
     } catch (err) {
-      console.warn("[Netlify] Workflow trigger error:", err);
+      console.warn("[Netlify] Build config error:", err);
     }
 
-    // ── Step 5: Return result ──
-    const secretsSet = tokenSecret && siteSecret;
-    const autoDeploy = secretsSet && workflowTriggered;
-
+    // ─────────────────────────────────────────────
+    // Step 3: Return result with next steps
+    // ─────────────────────────────────────────────
     return NextResponse.json({
       id: siteId,
-      name: uniqueName,
+      name: siteName,
       url: siteUrl,
+      admin_url: adminUrl,
+      build_configured: buildConfigured,
       success: true,
-      workflow_url: workflowUrl,
-      workflow_triggered: workflowTriggered,
-      secrets_set: secretsSet,
-      message: autoDeploy
-        ? `Netlify site created and deployment triggered! The site will be live at ${siteUrl} in 1-3 minutes. Watch progress: ${workflowUrl}`
-        : secretsSet
-          ? `Netlify site created and secrets configured. Go to GitHub Actions tab to trigger the deploy-netlify workflow manually. Site URL: ${siteUrl}`
-          : `Netlify site created at ${siteUrl}. To complete setup: 1) Go to https://github.com/${owner}/${repo}/settings/secrets/actions 2) Add NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID 3) Push to ${siteBranch} to trigger deployment.`,
+      needs_manual_repo_link: true,
+      message: buildConfigured
+        ? `Site "${siteName}" created with build settings configured. Go to your Netlify dashboard to connect your GitHub repo and start deploying.`
+        : `Site "${siteName}" created. Go to your Netlify dashboard to connect your GitHub repo and configure build settings.`,
+      dashboard_link: adminUrl,
+      setup_steps: [
+        { step: 1, text: "Site created on Netlify", done: true },
+        { step: 2, text: buildConfigured ? "Build settings configured" : "Configure build settings manually", done: buildConfigured },
+        { step: 3, text: "Connect GitHub repo in Netlify dashboard", done: false, link: adminUrl },
+        { step: 4, text: "Push to repo — Netlify auto-deploys", done: false },
+      ],
     });
   } catch (error) {
-    console.error("[Netlify] Deployment error:", error);
+    console.error("[Netlify] Error:", error);
     const msg = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json(
-      { error: `Failed to create Netlify deployment: ${msg}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `Netlify error: ${msg}` }, { status: 500 });
   }
-}
-
-function generateNetlifyWorkflow(branch: string): string {
-  return `name: Deploy to Netlify
-
-on:
-  push:
-    branches: [${branch}]
-  workflow_dispatch:
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Deploy to Netlify
-        uses: nwtgck/actions-netlify@v3
-        with:
-          publish-dir: './out'
-          production-branch: ${branch}
-          production-deploy: true
-          deploy-message: "Deploy from GitHub Actions"
-        env:
-          NETLIFY_AUTH_TOKEN: \${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: \${{ secrets.NETLIFY_SITE_ID }}
-`;
 }

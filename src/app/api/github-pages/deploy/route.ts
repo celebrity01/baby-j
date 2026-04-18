@@ -7,18 +7,20 @@ import {
 } from "@/lib/github-secrets";
 
 /**
- * Deploy to GitHub Pages via GitHub Actions.
+ * GITHUB PAGES — Deploy API Route
  *
- * NEW ARCHITECTURE:
- * 1. Push a GitHub Actions workflow file for Pages deployment
- * 2. Enable Pages with build_type: "workflow" via GitHub API
+ * Based on official GitHub REST API documentation:
+ * https://docs.github.com/rest/pages/pages
+ *
+ * APPROACH:
+ * 1. Create a GitHub Actions workflow file in the repo (.github/workflows/deploy-pages.yml)
+ * 2. Enable GitHub Pages with build_type: "workflow"
  * 3. Trigger the workflow via workflow_dispatch
- * 4. Return the Pages URL and workflow run URL
+ * 4. Return Pages URL + workflow URL + setup steps
  *
- * This is more reliable than direct API calls because:
- * - GitHub Actions handles the build and deploy automatically
- * - No manual configuration needed beyond pushing the workflow
- * - Works with any GitHub token that has 'repo' scope
+ * REQUIRED TOKEN SCOPES:
+ * - Classic PAT: repo + workflow
+ * - Fine-grained: Contents (write), Pages (write), Administration (write), Actions (write), Secrets (write)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -34,19 +36,18 @@ export async function POST(req: NextRequest) {
     const { owner, repo, branch } = body;
 
     if (!owner || !repo) {
-      return NextResponse.json(
-        { error: "Owner and repo are required." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Owner and repo are required." }, { status: 400 });
     }
 
     const siteBranch = branch || "main";
-    const encodedOwner = encodeURIComponent(owner);
-    const encodedRepo = encodeURIComponent(repo);
-    const apiBase = `https://api.github.com/repos/${encodedOwner}/${encodedRepo}`;
-    const pagesUrl = `https://${owner}.github.io/${repo}/`;
+    const apiBase = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    const pagesUrl = owner.toLowerCase() === repo.toLowerCase()
+      ? `https://${owner}.github.io/`
+      : `https://${owner}.github.io/${repo}/`;
 
-    // ── Step 1: Push GitHub Actions workflow file ──
+    // ─────────────────────────────────────────────
+    // Step 1: Create GitHub Actions workflow file
+    // ─────────────────────────────────────────────
     console.log(`[GitHub Pages] Setting up deployment for ${owner}/${repo}`);
 
     const workflowPath = ".github/workflows/deploy-pages.yml";
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     const fileResult = await createOrUpdateRepoFile(
       owner, repo, workflowPath, workflowContent,
-      "Add GitHub Pages deployment workflow via Baby J",
+      "Add GitHub Pages deployment workflow",
       siteBranch,
       githubToken
     );
@@ -64,15 +65,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: false,
         url: pagesUrl,
-        error: `Failed to create workflow file: ${fileResult.error}. Check that your token has write access to ${owner}/${repo}.`,
-      });
+        error: `Could not create workflow file: ${fileResult.error}`,
+        hint: "Ensure your GitHub token has 'repo' and 'workflow' scopes, and you have write access to the repository.",
+      }, { status: 500 });
     }
 
     console.log(`[GitHub Pages] Workflow pushed to ${workflowPath}`);
 
-    // ── Step 2: Enable GitHub Pages with workflow source ──
+    // ─────────────────────────────────────────────
+    // Step 2: Enable GitHub Pages with workflow source
+    // ─────────────────────────────────────────────
     let pagesEnabled = false;
-    let pagesError = "";
+    let pagesMessage = "";
 
     try {
       const enableRes = await fetch(`${apiBase}/pages`, {
@@ -88,28 +92,30 @@ export async function POST(req: NextRequest) {
         }),
       });
 
-      if (enableRes.ok) {
+      if (enableRes.ok || enableRes.status === 201) {
         pagesEnabled = true;
         console.log(`[GitHub Pages] Pages enabled with workflow source`);
       } else if (enableRes.status === 409) {
-        // Pages already configured - that's fine
+        // Pages already configured — that's fine
         pagesEnabled = true;
         console.log(`[GitHub Pages] Pages already configured`);
       } else {
         const errRaw = await enableRes.text().catch(() => "");
         try {
           const j = JSON.parse(errRaw);
-          pagesError = j.message || errRaw.substring(0, 200);
+          pagesMessage = j.message || errRaw.substring(0, 200);
         } catch {
-          pagesError = errRaw.substring(0, 200);
+          pagesMessage = errRaw.substring(0, 200);
         }
-        console.warn(`[GitHub Pages] Enable failed (${enableRes.status}):`, pagesError);
+        console.warn(`[GitHub Pages] Enable failed (${enableRes.status}):`, pagesMessage);
       }
     } catch (err) {
       console.warn("[GitHub Pages] Enable error:", err);
     }
 
-    // ── Step 3: Trigger workflow dispatch ──
+    // ─────────────────────────────────────────────
+    // Step 3: Trigger workflow dispatch
+    // ─────────────────────────────────────────────
     let workflowUrl = "";
     let workflowTriggered = false;
 
@@ -132,8 +138,11 @@ export async function POST(req: NextRequest) {
       console.warn("[GitHub Pages] Workflow trigger error:", err);
     }
 
-    // ── Step 4: Return result ──
+    // ─────────────────────────────────────────────
+    // Step 4: Return result
+    // ─────────────────────────────────────────────
     const autoDeploy = pagesEnabled && workflowTriggered;
+    const settingsUrl = `https://github.com/${owner}/${repo}/settings/pages`;
 
     return NextResponse.json({
       success: true,
@@ -142,18 +151,22 @@ export async function POST(req: NextRequest) {
       pages_enabled: pagesEnabled,
       workflow_triggered: workflowTriggered,
       message: autoDeploy
-        ? `GitHub Pages deployment triggered! The site will be live at ${pagesUrl} in 1-3 minutes. Watch progress: ${workflowUrl}`
+        ? `GitHub Pages deployment triggered! Site will be live at ${pagesUrl} in 1-3 minutes.`
         : pagesEnabled
-          ? `GitHub Pages enabled. Deploy the ${siteBranch} branch to trigger the workflow automatically. Workflow file created at .github/workflows/deploy-pages.yml.`
-          : `Workflow created at .github/workflows/deploy-pages.yml. To complete setup: Go to https://github.com/${owner}/${repo}/settings/pages and select "GitHub Actions" as the source.${pagesError ? ` Note: ${pagesError}` : ""}`,
+          ? `GitHub Pages enabled. The deploy workflow will run automatically on the next push to "${siteBranch}".`
+          : `Workflow file created. To complete setup, go to your repository Settings → Pages and select "GitHub Actions" as the source.${pagesMessage ? ` (${pagesMessage})` : ""}`,
+      dashboard_link: settingsUrl,
+      setup_steps: [
+        { step: 1, text: "Workflow file pushed to repo", done: true },
+        { step: 2, text: pagesEnabled ? "GitHub Pages enabled" : "Enable Pages (may need manual step)", done: pagesEnabled },
+        { step: 3, text: workflowTriggered ? "Deployment triggered" : "Push to branch to trigger deployment", done: workflowTriggered },
+        { step: 4, text: `Site live at ${pagesUrl}`, done: false },
+      ],
     });
   } catch (error) {
-    console.error("[GitHub Pages] Deploy error:", error);
+    console.error("[GitHub Pages] Error:", error);
     const msg = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json(
-      { error: `GitHub Pages setup failed: ${msg}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `GitHub Pages error: ${msg}` }, { status: 500 });
   }
 }
 
