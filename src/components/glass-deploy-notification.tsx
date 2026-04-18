@@ -332,7 +332,8 @@ export default function GlassDeployNotification({
         branch,
       }, githubToken) as Record<string, unknown>;
       const url = (data.url as string) || (data.ssl_url as string) || '';
-      return { success: true, url };
+      const message = data.message as string | undefined;
+      return { success: true, url, message };
     } else if (provider.id === 'render') {
       const data = await createRenderService(token, {
         name: repo,
@@ -346,7 +347,8 @@ export default function GlassDeployNotification({
       const data = await deployPages(token, { owner, repo, branch }) as Record<string, unknown>;
       const url = (data.url as string) || `https://${owner}.github.io/${repo}/`;
       const message = data.message as string | undefined;
-      return { success: !!data.success, url, error: message ? undefined : `GitHub Pages: ${JSON.stringify(data)}` };
+      const success = !!(data.success);
+      return { success, url, message, error: success ? undefined : (data.error as string) || 'GitHub Pages deployment failed' };
     }
 
     return { success: false, error: 'Unsupported provider' };
