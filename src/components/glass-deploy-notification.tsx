@@ -2,9 +2,9 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
-  X, Globe, Server, CheckCircle2, Loader2, ArrowRight,
-  ChevronRight, ExternalLink, Key, AlertTriangle, Clock,
-  Zap, FileCode, Shield, ArrowLeft, RefreshCw,
+  X, Globe, Server, CheckCircle2, Loader2,
+  ChevronRight, ExternalLink, Key, AlertTriangle,
+  Zap, Shield, RefreshCw, ChevronDown, ChevronUp, Rocket,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,27 +28,8 @@ interface GlassDeployNotificationProps {
   onClose: () => void;
 }
 
-type DeployStep =
-  | 'select-provider'
-  | 'api-key'
-  | 'select-item'
-  | 'select-branch'
-  | 'confirm'
-  | 'deploying'
-  | 'result';
-
-interface ProviderConfig {
-  id: string;
-  name: string;
-  description: string;
-  icon: typeof Globe;
-  color: string;
-  storageKey: string;
-  helpUrl: string;
-  helpText: string;
-  needsProviderToken: boolean;
-  needsGitHubToken: boolean;
-}
+type ProviderId = 'netlify' | 'vercel' | 'render' | 'github-pages';
+type DeployPhase = 'idle' | 'deploying' | 'monitoring' | 'result';
 
 interface SetupStep {
   step: number;
@@ -72,21 +53,38 @@ interface DeployResult {
   workflow_triggered?: boolean;
 }
 
+interface HostItem {
+  id: string;
+  name: string;
+  url?: string;
+}
+
+interface ProviderState {
+  token: string | null;
+  showTokenInput: boolean;
+  tokenInput: string;
+  hostItems: HostItem[];
+  hostItemsLoading: boolean;
+  hostItemsError: string;
+  existingExpanded: boolean;
+  // New deploy state
+  repos: GitHubRepo[];
+  reposLoading: boolean;
+  selectedRepo: string;
+  branches: { name: string; default?: boolean }[];
+  branchesLoading: boolean;
+  selectedBranch: string;
+  phase: DeployPhase;
+  isRedeploy: boolean;
+  selectedHostItem: string;
+  deployResult: DeployResult | null;
+  deploymentStatus: DeploymentStatus | null;
+  isMonitoring: boolean;
+}
+
 // ===== Provider Configs =====
 
-const providers: ProviderConfig[] = [
-  {
-    id: 'vercel',
-    name: 'Vercel',
-    description: 'Automatic deploys from Git. Zero-config for Next.js.',
-    icon: Globe,
-    color: '#ffffff',
-    storageKey: 'vercel-token',
-    helpUrl: 'https://vercel.com/account/tokens',
-    helpText: 'Create a token at vercel.com/account/tokens. Scope: Full Account.',
-    needsProviderToken: true,
-    needsGitHubToken: true,
-  },
+const providerConfigs: { id: ProviderId; name: string; description: string; icon: typeof Globe; color: string; storageKey: string | null; headerKey: string; helpUrl: string; helpText: string; needsGitHubToken: boolean }[] = [
   {
     id: 'netlify',
     name: 'Netlify',
@@ -94,10 +92,22 @@ const providers: ProviderConfig[] = [
     icon: Shield,
     color: '#00E676',
     storageKey: 'netlify-token',
+    headerKey: 'X-Netlify-Token',
     helpUrl: 'https://app.netlify.com/user/applications/personal',
     helpText: 'Create a personal access token at app.netlify.com/user/applications.',
-    needsProviderToken: true,
     needsGitHubToken: false,
+  },
+  {
+    id: 'vercel',
+    name: 'Vercel',
+    description: 'Automatic deploys from Git. Zero-config for Next.js.',
+    icon: Globe,
+    color: '#ffffff',
+    storageKey: 'vercel-token',
+    headerKey: 'X-Vercel-Token',
+    helpUrl: 'https://vercel.com/account/tokens',
+    helpText: 'Create a token at vercel.com/account/tokens. Scope: Full Account.',
+    needsGitHubToken: true,
   },
   {
     id: 'render',
@@ -106,9 +116,9 @@ const providers: ProviderConfig[] = [
     icon: Server,
     color: '#B388FF',
     storageKey: 'render-api-key',
+    headerKey: 'X-Render-Api-Key',
     helpUrl: 'https://dashboard.render.com/account/api-keys',
-    helpText: 'Create an API key at dashboard.render.com/account (team plan required).',
-    needsProviderToken: true,
+    helpText: 'Create an API key at dashboard.render.com/account.',
     needsGitHubToken: false,
   },
   {
@@ -117,15 +127,39 @@ const providers: ProviderConfig[] = [
     description: 'Free hosting directly from your GitHub repo.',
     icon: Globe,
     color: '#58A6FF',
-    storageKey: 'github-token',
+    storageKey: null,
+    headerKey: 'X-GitHub-Token',
     helpUrl: 'https://github.com/settings/tokens',
     helpText: 'Uses your connected GitHub token. Needs repo + workflow scopes.',
-    needsProviderToken: false,
     needsGitHubToken: true,
   },
 ];
 
-// ===== Error Extractor =====
+// ===== Helpers =====
+
+function createInitialState(): ProviderState {
+  return {
+    token: null,
+    showTokenInput: false,
+    tokenInput: '',
+    hostItems: [],
+    hostItemsLoading: false,
+    hostItemsError: '',
+    existingExpanded: true,
+    repos: [],
+    reposLoading: false,
+    selectedRepo: '',
+    branches: [],
+    branchesLoading: false,
+    selectedBranch: '',
+    phase: 'idle',
+    isRedeploy: false,
+    selectedHostItem: '',
+    deployResult: null,
+    deploymentStatus: null,
+    isMonitoring: false,
+  };
+}
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message;
@@ -146,714 +180,851 @@ export default function GlassDeployNotification({
   isOpen,
   onClose,
 }: GlassDeployNotificationProps) {
-  const [step, setStep] = useState<DeployStep>('select-provider');
-  const [selectedProvider, setSelectedProvider] = useState<ProviderConfig | null>(null);
-  const [tokenInput, setTokenInput] = useState('');
-  const [savedToken, setSavedToken] = useState<string | null>(null);
-  const [repos, setRepos] = useState<GitHubRepo[]>([]);
-  const [branches, setBranches] = useState<{ name: string; default?: boolean }[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState('');
-  const [selectedBranch, setSelectedBranch] = useState('');
-  const [hostItems, setHostItems] = useState<{ id: string; name: string; url?: string }[]>([]);
-  const [selectedHostItem, setSelectedHostItem] = useState('');
-  const [selectedHostItemName, setSelectedHostItemName] = useState('');
-  const [isDeploying, setIsDeploying] = useState(false);
-  const [deployResult, setDeployResult] = useState<DeployResult | null>(null);
-  const [itemTab, setItemTab] = useState<'host' | 'github'>('github');
-  const [isLoadingItems, setIsLoadingItems] = useState(false);
-  const [loadItemsError, setLoadItemsError] = useState('');
+  const [activeTab, setActiveTab] = useState<ProviderId>('netlify');
+  const [states, setStates] = useState<Record<ProviderId, ProviderState>>({
+    netlify: createInitialState(),
+    vercel: createInitialState(),
+    render: createInitialState(),
+    'github-pages': createInitialState(),
+  });
 
-  // Monitoring state (for GitHub Pages workflow)
-  const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
-  const monitorInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  // Initialize tokens from localStorage
+  useEffect(() => {
+    if (!isOpen) return;
+    setStates(prev => {
+      const next = { ...prev };
+      for (const cfg of providerConfigs) {
+        if (cfg.storageKey) {
+          const stored = localStorage.getItem(cfg.storageKey);
+          if (stored && !next[cfg.id].token) {
+            next[cfg.id] = { ...next[cfg.id], token: stored };
+          }
+        } else if (cfg.id === 'github-pages') {
+          if (githubToken && !next[cfg.id].token) {
+            next[cfg.id] = { ...next[cfg.id], token: githubToken };
+          }
+        }
+      }
+      return next;
+    });
+  }, [isOpen, githubToken]);
+
+  // Monitoring intervals per provider
+  const monitorIntervals = useRef<Record<ProviderId, ReturnType<typeof setInterval> | null>>({
+    netlify: null, vercel: null, render: null, 'github-pages': null,
+  });
 
   useEffect(() => {
     return () => {
-      if (monitorInterval.current) clearInterval(monitorInterval.current);
+      for (const key of Object.keys(monitorIntervals.current) as ProviderId[]) {
+        if (monitorIntervals.current[key]) clearInterval(monitorIntervals.current[key]!);
+      }
     };
   }, []);
 
-  const reset = useCallback(() => {
-    setStep('select-provider');
-    setSelectedProvider(null);
-    setTokenInput('');
-    setSavedToken(null);
-    setRepos([]);
-    setBranches([]);
-    setSelectedRepo('');
-    setSelectedBranch('');
-    setHostItems([]);
-    setSelectedHostItem('');
-    setSelectedHostItemName('');
-    setIsDeploying(false);
-    setDeployResult(null);
-    setItemTab('github');
-    setIsLoadingItems(false);
-    setLoadItemsError('');
-    setDeploymentStatus(null);
-    setIsMonitoring(false);
-    if (monitorInterval.current) clearInterval(monitorInterval.current);
-    monitorInterval.current = null;
+  const s = states[activeTab];
+  const cfg = providerConfigs.find(c => c.id === activeTab)!;
+
+  const updateState = useCallback((pid: ProviderId, patch: Partial<ProviderState>) => {
+    setStates(prev => ({ ...prev, [pid]: { ...prev[pid], ...patch } }));
   }, []);
 
-  const handleClose = () => { reset(); onClose(); };
-
-  // ── Provider Selection ──
-
-  const handleSelectProvider = (provider: ProviderConfig) => {
-    setSelectedProvider(provider);
-
-    if (!provider.needsProviderToken) {
-      // GitHub Pages — uses existing GitHub token
-      if (!githubToken) {
-        setLoadItemsError('Connect GitHub first to use GitHub Pages.');
-        return;
-      }
-      setSavedToken(githubToken);
-      setStep('select-item');
-      loadItems(provider, githubToken);
-    } else {
-      const stored = localStorage.getItem(provider.storageKey);
-      if (stored) {
-        setSavedToken(stored);
-        setStep('select-item');
-        loadItems(provider, stored);
-      } else {
-        setStep('api-key');
+  const handleClose = useCallback(() => {
+    // Stop all monitoring
+    for (const key of Object.keys(monitorIntervals.current) as ProviderId[]) {
+      if (monitorIntervals.current[key]) {
+        clearInterval(monitorIntervals.current[key]!);
+        monitorIntervals.current[key] = null;
       }
     }
-  };
+    setStates({
+      netlify: createInitialState(),
+      vercel: createInitialState(),
+      render: createInitialState(),
+      'github-pages': createInitialState(),
+    });
+    setActiveTab('netlify');
+    onClose();
+  }, [onClose]);
 
-  const handleSaveToken = async () => {
-    if (!tokenInput.trim() || !selectedProvider) return;
-    localStorage.setItem(selectedProvider.storageKey, tokenInput.trim());
-    setSavedToken(tokenInput.trim());
-    setStep('select-item');
-    await loadItems(selectedProvider, tokenInput.trim());
-  };
+  // ── Load host items ──
 
-  // ── Load Items ──
+  const loadHostItems = useCallback(async (pid: ProviderId) => {
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const token = pid === 'github-pages' ? githubToken : states[pid].token;
+    if (!token) return;
 
-  const loadItems = async (provider: ProviderConfig, token: string) => {
-    setIsLoadingItems(true);
-    setLoadItemsError('');
+    updateState(pid, { hostItemsLoading: true, hostItemsError: '' });
     try {
-      // Load existing projects from provider
-      if (provider.id === 'vercel') {
-        const res = await fetch('/api/vercel/projects', { headers: { 'X-Vercel-Token': token } });
-        if (!res.ok) throw new Error(`Failed to load Vercel projects (${res.status})`);
-        const data = await res.json();
-        setHostItems((data || []).map((p: Record<string, unknown>) => ({
-          id: p.id as string, name: p.name as string, url: (p.alias as string[])?.[0] || (p.url as string),
-        })));
-      } else if (provider.id === 'netlify') {
-        const res = await fetch('/api/netlify/sites', { headers: { 'X-Netlify-Token': token } });
-        if (!res.ok) throw new Error(`Failed to load Netlify sites (${res.status})`);
-        const data = await res.json();
-        setHostItems((data || []).map((s: Record<string, unknown>) => ({
+      const headers: Record<string, string> = {};
+      if (config.headerKey === 'X-GitHub-Token') {
+        headers['X-GitHub-Token'] = token;
+      } else {
+        headers[config.headerKey] = token;
+      }
+
+      let url = '';
+      if (pid === 'netlify') url = '/api/netlify/sites';
+      else if (pid === 'vercel') url = '/api/vercel/projects';
+      else if (pid === 'render') url = '/api/render/services';
+      else if (pid === 'github-pages') url = '/api/github-pages/sites';
+
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+      const data = await res.json();
+
+      let items: HostItem[] = [];
+      if (pid === 'netlify') {
+        items = (data || []).map((s: Record<string, unknown>) => ({
           id: s.id as string, name: s.name as string, url: (s.ssl_url as string) || (s.url as string),
-        })));
-      } else if (provider.id === 'render') {
-        const res = await fetch('/api/render/services', { headers: { 'X-Render-Api-Key': token } });
-        if (!res.ok) throw new Error(`Failed to load Render services (${res.status})`);
-        const data = await res.json();
-        setHostItems((data || []).map((s: Record<string, unknown>) => ({
-          id: s.id as string, name: s.name as string || s.id, url: s.url as string,
-        })));
-      } else if (provider.id === 'github-pages') {
-        const res = await fetch('/api/github-pages/sites', { headers: { 'X-GitHub-Token': token } });
-        if (res.ok) {
-          const data = await res.json();
-          setHostItems((data || []).map((s: Record<string, unknown>) => {
-            const htmlUrl = s.html_url as string;
-            const urlParts = (htmlUrl || '').replace(/\/$/, '').split('/');
-            const repoSlug = urlParts.length >= 2 ? `${urlParts[urlParts.length - 2]}/${urlParts[urlParts.length - 1]}` : htmlUrl;
-            return { id: repoSlug, name: (s.repo_name as string) || repoSlug, url: htmlUrl };
-          }));
-        }
+        }));
+      } else if (pid === 'vercel') {
+        items = (data || []).map((p: Record<string, unknown>) => ({
+          id: p.id as string, name: p.name as string, url: (p.alias as string[])?.[0] || (p.url as string),
+        }));
+      } else if (pid === 'render') {
+        items = (data || []).map((sv: Record<string, unknown>) => ({
+          id: sv.id as string, name: (sv.name as string) || sv.id, url: sv.url as string,
+        }));
+      } else if (pid === 'github-pages') {
+        items = (data || []).map((pg: Record<string, unknown>) => {
+          const htmlUrl = pg.html_url as string;
+          const urlParts = (htmlUrl || '').replace(/\/$/, '').split('/');
+          const repoSlug = urlParts.length >= 2 ? `${urlParts[urlParts.length - 2]}/${urlParts[urlParts.length - 1]}` : htmlUrl;
+          return { id: repoSlug, name: (pg.repo_name as string) || repoSlug, url: htmlUrl };
+        });
       }
-
-      // Always load GitHub repos
-      if (githubToken) {
-        const ghRepos = await listGitHubRepos(githubToken);
-        setRepos(ghRepos);
-      }
+      updateState(pid, { hostItems: items, hostItemsLoading: false });
     } catch (err) {
-      setLoadItemsError(extractErrorMessage(err, 'Failed to load items.'));
-    } finally {
-      setIsLoadingItems(false);
+      updateState(pid, { hostItemsError: extractErrorMessage(err, 'Failed to load.'), hostItemsLoading: false });
     }
-  };
+  }, [githubToken, states, updateState]);
 
-  const handleSelectRepo = async (fullName: string) => {
-    setSelectedRepo(fullName);
-    setSelectedBranch('');
-    if (!githubToken) {
-      setLoadItemsError('GitHub token required for branch loading.');
-      return;
+  // ── Load repos ──
+
+  const loadRepos = useCallback(async (pid: ProviderId) => {
+    if (!githubToken) return;
+    updateState(pid, { reposLoading: true });
+    try {
+      const ghRepos = await listGitHubRepos(githubToken);
+      updateState(pid, { repos: ghRepos, reposLoading: false });
+    } catch (err) {
+      updateState(pid, { reposLoading: false });
     }
+  }, [githubToken, updateState]);
+
+  // ── Load branches ──
+
+  const loadBranches = useCallback(async (pid: ProviderId, fullName: string) => {
+    if (!githubToken) return;
+    updateState(pid, { branchesLoading: true, selectedBranch: '' });
     try {
       const [owner, repo] = fullName.split('/');
       const b = await listBranches(githubToken, owner, repo);
-      setBranches(b.map((br) => ({ name: br.name, default: br.default })));
+      const mapped = b.map((br) => ({ name: br.name, default: br.default }));
       const def = b.find((br) => br.default) || b[0];
-      if (def) setSelectedBranch(def.name);
-      setStep('select-branch');
+      updateState(pid, { branches: mapped, selectedBranch: def?.name || '', branchesLoading: false });
     } catch {
-      setLoadItemsError('Failed to load branches.');
+      updateState(pid, { branchesLoading: false });
     }
-  };
+  }, [githubToken, updateState]);
+
+  // ── Token management ──
+
+  const handleSaveToken = useCallback((pid: ProviderId) => {
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const st = states[pid];
+    if (!st.tokenInput.trim() || !config.storageKey) return;
+    localStorage.setItem(config.storageKey, st.tokenInput.trim());
+    updateState(pid, { token: st.tokenInput.trim(), tokenInput: '', showTokenInput: false });
+    loadHostItems(pid);
+    if (config.needsGitHubToken || githubToken) {
+      loadRepos(pid);
+    }
+  }, [states, updateState, loadHostItems, loadRepos, githubToken]);
+
+  const handleChangeToken = useCallback((pid: ProviderId) => {
+    const config = providerConfigs.find(c => c.id === pid)!;
+    if (config.storageKey) localStorage.removeItem(config.storageKey);
+    updateState(pid, { token: null, showTokenInput: true, tokenInput: '', hostItems: [], deployResult: null });
+  }, [updateState]);
 
   // ── Monitoring ──
 
-  const startMonitoring = (owner: string, repo: string) => {
+  const startMonitoring = useCallback((pid: ProviderId, owner: string, repo: string) => {
     if (!githubToken) return;
-    setIsMonitoring(true);
-    setDeploymentStatus({ status: 'queued', message: 'Waiting for workflow to register...' });
+    updateState(pid, { isMonitoring: true, deploymentStatus: { status: 'queued', message: 'Waiting for workflow to register...' } });
     let attempts = 0;
 
-    monitorInterval.current = setInterval(async () => {
+    monitorIntervals.current[pid] = setInterval(async () => {
       attempts++;
       if (attempts > 40) {
-        if (monitorInterval.current) clearInterval(monitorInterval.current);
-        setDeploymentStatus({ status: 'timeout', message: 'Taking longer than expected. Check GitHub Actions tab.' });
-        setIsMonitoring(false);
+        if (monitorIntervals.current[pid]) clearInterval(monitorIntervals.current[pid]!);
+        monitorIntervals.current[pid] = null;
+        updateState(pid, {
+          deploymentStatus: { status: 'timeout', message: 'Taking longer than expected. Check GitHub Actions tab.' },
+          isMonitoring: false,
+        });
         return;
       }
       try {
-        const status = await getDeploymentStatus(githubToken, {
-          owner, repo, workflow_file: 'deploy-pages.yml',
-        });
-        setDeploymentStatus(status);
+        const status = await getDeploymentStatus(githubToken, { owner, repo, workflow_file: 'deploy-pages.yml' });
+        updateState(pid, { deploymentStatus: status });
         if (status.status === 'success' || status.status === 'failed' || status.status === 'cancelled') {
-          if (monitorInterval.current) clearInterval(monitorInterval.current);
-          setIsMonitoring(false);
+          if (monitorIntervals.current[pid]) clearInterval(monitorIntervals.current[pid]!);
+          monitorIntervals.current[pid] = null;
           setTimeout(() => {
-            setDeployResult({
-              success: status.status === 'success',
-              url: status.status === 'success' ? deployResult?.url : undefined,
-              message: status.message,
-              workflow_url: status.html_url,
-              error: status.status !== 'success' ? status.message : undefined,
+            const st = states[pid];
+            updateState(pid, {
+              phase: 'result',
+              isMonitoring: false,
+              deployResult: {
+                success: status.status === 'success',
+                url: status.status === 'success' ? st.deployResult?.url : undefined,
+                message: status.message,
+                workflow_url: status.html_url,
+                error: status.status !== 'success' ? status.message : undefined,
+              },
             });
-            setStep('result');
           }, 1500);
         }
       } catch { /* retry */ }
     }, 10000);
-  };
+  }, [githubToken, updateState, states]);
 
-  // ── Deploy ──
+  // ── Deploy actions ──
 
-  const canDeploy = (itemTab === 'host' && selectedHostItem) || (itemTab === 'github' && selectedRepo && selectedBranch);
+  const handleRedeploy = useCallback(async (pid: ProviderId, itemId: string) => {
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const token = pid === 'github-pages' ? (githubToken || '') : states[pid].token;
+    if (!token) return;
 
-  const handleConfirm = async () => {
-    if (!selectedProvider || !canDeploy) return;
-    const providerToken = selectedProvider.needsProviderToken ? savedToken : (githubToken || '');
-    if (!providerToken && selectedProvider.needsProviderToken) return;
-
-    setIsDeploying(true);
-    setStep('deploying');
+    updateState(pid, { phase: 'deploying', isRedeploy: true, selectedHostItem: itemId, deployResult: null });
 
     try {
       let result: DeployResult;
 
-      if (!providerToken) {
-        result = { success: false, error: 'Provider token is missing.' };
-      } else if (selectedHostItem && itemTab === 'host') {
-        result = await triggerRedeploy(selectedProvider, providerToken, selectedHostItem);
-      } else if (selectedRepo && selectedBranch) {
-        result = await deployFromRepo(selectedProvider, providerToken, selectedRepo, selectedBranch);
+      if (pid === 'vercel') {
+        const data = await deployVercel(token, { projectId: itemId }) as Record<string, unknown>;
+        result = { success: true, url: (data.url as string) || (data.alias as string[])?.[0] };
+      } else if (pid === 'netlify') {
+        const data = await deployNetlify(token, { siteId: itemId }) as Record<string, unknown>;
+        // Handle "needs_manual_repo_link" error
+        if (data.needs_manual_repo_link) {
+          result = {
+            success: false,
+            error: data.error as string || 'Site has no linked repo.',
+            hint: data.hint as string,
+            dashboard_link: data.dashboard_link as string,
+            needs_manual_repo_link: true,
+          };
+        } else {
+          result = { success: true, url: (data.ssl_url as string) || (data.url as string) };
+        }
+      } else if (pid === 'render') {
+        const data = await deployRender(token, { serviceId: itemId }) as Record<string, unknown>;
+        const saved = states[pid].hostItems.find(h => h.id === itemId);
+        result = { success: true, url: (data.url as string) || saved?.url };
+      } else if (pid === 'github-pages') {
+        const [owner, repo] = itemId.split('/');
+        const data = await deployPages(token, { owner, repo }) as Record<string, unknown>;
+        result = {
+          success: !!(data.success),
+          url: (data.url as string) || `https://${owner}.github.io/${repo}/`,
+          message: data.message as string,
+          workflow_url: data.workflow_url as string,
+          pages_enabled: data.pages_enabled as boolean,
+          workflow_triggered: data.workflow_triggered as boolean,
+        };
       } else {
-        result = { success: false, error: 'No deployment target selected.' };
+        result = { success: false, error: 'Unsupported provider.' };
       }
 
-      setDeployResult(result);
+      updateState(pid, { deployResult: result });
 
       // Start monitoring for GitHub Pages
-      if (result.workflow_triggered && result.pages_enabled && selectedRepo) {
-        const [owner, repo] = selectedRepo.split('/');
-        startMonitoring(owner, repo);
-        return;
+      if (result.workflow_triggered && result.pages_enabled) {
+        const [owner, repo] = itemId.split('/');
+        startMonitoring(pid, owner, repo);
+      } else {
+        updateState(pid, { phase: 'result' });
+      }
+    } catch (err) {
+      updateState(pid, {
+        phase: 'result',
+        deployResult: { success: false, error: extractErrorMessage(err, 'Redeploy failed.') },
+      });
+    }
+  }, [githubToken, states, updateState, startMonitoring]);
+
+  const handleDeployFromRepo = useCallback(async (pid: ProviderId) => {
+    const st = states[pid];
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const token = pid === 'github-pages' ? (githubToken || '') : st.token;
+    if (!token || !st.selectedRepo || !st.selectedBranch) return;
+
+    updateState(pid, { phase: 'deploying', isRedeploy: false, deployResult: null });
+    const [owner, repo] = st.selectedRepo.split('/');
+
+    try {
+      let result: DeployResult;
+
+      if (pid === 'vercel') {
+        const data = await createVercelProject(token, {
+          name: repo, repoOwner: owner, repoName: repo, branch: st.selectedBranch,
+        }) as Record<string, unknown>;
+        result = {
+          success: true,
+          url: (data.url as string) || (data.alias as string[])?.[0] || `https://${repo}-vercel.app`,
+          message: data.message as string,
+          dashboard_link: data.dashboard_link as string,
+          setup_steps: data.setup_steps as SetupStep[],
+          git_linked: data.git_linked as boolean,
+        };
+      } else if (pid === 'netlify') {
+        const data = await createNetlifySite(token, {
+          name: repo, branch: st.selectedBranch,
+        }, githubToken) as Record<string, unknown>;
+        result = {
+          success: true,
+          url: (data.url as string) || (data.ssl_url as string),
+          message: data.message as string,
+          dashboard_link: data.dashboard_link as string,
+          setup_steps: data.setup_steps as SetupStep[],
+          needs_manual_repo_link: data.needs_manual_repo_link as boolean,
+        };
+      } else if (pid === 'render') {
+        const data = await createRenderService(token, {
+          name: repo,
+          repoUrl: `https://github.com/${owner}/${repo}`,
+          branch: st.selectedBranch,
+          runtime: 'node',
+        }) as Record<string, unknown>;
+        result = {
+          success: true,
+          url: (data.url as string),
+          message: data.message as string,
+          dashboard_link: data.dashboard_link as string,
+          setup_steps: data.setup_steps as SetupStep[],
+        };
+      } else if (pid === 'github-pages') {
+        const data = await deployPages(githubToken || '', { owner, repo, branch: st.selectedBranch }) as Record<string, unknown>;
+        result = {
+          success: !!(data.success),
+          url: (data.url as string) || `https://${owner}.github.io/${repo}/`,
+          message: data.message as string,
+          dashboard_link: data.dashboard_link as string,
+          setup_steps: data.setup_steps as SetupStep[],
+          workflow_url: data.workflow_url as string,
+          pages_enabled: data.pages_enabled as boolean,
+          workflow_triggered: data.workflow_triggered as boolean,
+          error: data.success ? undefined : (data.error as string),
+        };
+      } else {
+        result = { success: false, error: 'Unsupported provider.' };
       }
 
-      setStep('result');
+      updateState(pid, { deployResult: result });
+
+      // Start monitoring for GitHub Pages
+      if (result.workflow_triggered && result.pages_enabled) {
+        startMonitoring(pid, owner, repo);
+      } else {
+        updateState(pid, { phase: 'result' });
+      }
     } catch (err) {
-      setDeployResult({
-        success: false,
-        error: extractErrorMessage(err, 'Deployment failed. Check credentials and try again.'),
+      updateState(pid, {
+        phase: 'result',
+        deployResult: { success: false, error: extractErrorMessage(err, 'Deployment failed.') },
       });
-      setStep('result');
-    } finally {
-      setIsDeploying(false);
     }
-  };
+  }, [githubToken, states, updateState, startMonitoring]);
 
-  const triggerRedeploy = async (provider: ProviderConfig, token: string, itemId: string): Promise<DeployResult> => {
-    if (provider.id === 'vercel') {
-      const data = await deployVercel(token, { projectId: itemId }) as Record<string, unknown>;
-      return { success: true, url: (data.url as string) || (data.alias as string[])?.[0] };
-    } else if (provider.id === 'netlify') {
-      const data = await deployNetlify(token, { siteId: itemId }) as Record<string, unknown>;
-      return { success: true, url: (data.ssl_url as string) || (data.url as string) };
-    } else if (provider.id === 'render') {
-      const data = await deployRender(token, { serviceId: itemId }) as Record<string, unknown>;
-      const saved = hostItems.find(h => h.id === itemId);
-      return { success: true, url: (data.url as string) || saved?.url };
-    } else if (provider.id === 'github-pages') {
-      const [owner, repo] = itemId.split('/');
-      const data = await deployPages(token, { owner, repo, branch: selectedBranch }) as Record<string, unknown>;
-      return {
-        success: !!(data.success),
-        url: (data.url as string) || `https://${owner}.github.io/${repo}/`,
-        message: data.message as string,
-        workflow_url: data.workflow_url as string,
-        pages_enabled: data.pages_enabled as boolean,
-        workflow_triggered: data.workflow_triggered as boolean,
-      };
+  const handleRetry = useCallback((pid: ProviderId) => {
+    updateState(pid, { phase: 'idle', deployResult: null, deploymentStatus: null });
+  }, [updateState]);
+
+  const handleDone = useCallback((pid: ProviderId) => {
+    updateState(pid, { phase: 'idle', deployResult: null, deploymentStatus: null, isRedeploy: false, selectedHostItem: '' });
+    // Reload host items to show new site
+    loadHostItems(pid);
+  }, [updateState, loadHostItems]);
+
+  // ── Tab switch ──
+
+  const handleTabSwitch = useCallback((pid: ProviderId) => {
+    setActiveTab(pid);
+    const st = states[pid];
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const hasToken = !config.storageKey ? !!githubToken : !!st.token;
+
+    // Lazy load items on first tab visit
+    if (hasToken && st.hostItems.length === 0 && !st.hostItemsLoading && !st.hostItemsError) {
+      loadHostItems(pid);
     }
-    return { success: false, error: 'Redeploy not supported for this provider.' };
-  };
-
-  const deployFromRepo = async (
-    provider: ProviderConfig, token: string, repoFullName: string, branch: string
-  ): Promise<DeployResult> => {
-    const [owner, repo] = repoFullName.split('/');
-
-    if (provider.id === 'vercel') {
-      const data = await createVercelProject(token, {
-        name: repo, repoOwner: owner, repoName: repo, branch,
-      }) as Record<string, unknown>;
-      return {
-        success: true,
-        url: (data.url as string) || (data.alias as string[])?.[0] || `https://${repo}-vercel.app`,
-        message: data.message as string,
-        dashboard_link: data.dashboard_link as string,
-        setup_steps: data.setup_steps as SetupStep[],
-        git_linked: data.git_linked as boolean,
-      };
-    } else if (provider.id === 'netlify') {
-      const data = await createNetlifySite(token, {
-        name: repo,
-        repoUrl: `https://github.com/${owner}/${repo}`,
-        branch,
-      }, githubToken) as Record<string, unknown>;
-      return {
-        success: true,
-        url: (data.url as string) || (data.ssl_url as string),
-        message: data.message as string,
-        dashboard_link: data.dashboard_link as string,
-        setup_steps: data.setup_steps as SetupStep[],
-        needs_manual_repo_link: data.needs_manual_repo_link as boolean,
-      };
-    } else if (provider.id === 'render') {
-      const data = await createRenderService(token, {
-        name: repo,
-        repoUrl: `https://github.com/${owner}/${repo}`,
-        branch,
-        runtime: 'node',
-      }) as Record<string, unknown>;
-      return {
-        success: true,
-        url: (data.url as string),
-        message: data.message as string,
-        dashboard_link: data.dashboard_link as string,
-        setup_steps: data.setup_steps as SetupStep[],
-      };
-    } else if (provider.id === 'github-pages') {
-      const data = await deployPages(githubToken || '', { owner, repo, branch }) as Record<string, unknown>;
-      return {
-        success: !!(data.success),
-        url: (data.url as string) || `https://${owner}.github.io/${repo}/`,
-        message: data.message as string,
-        dashboard_link: data.dashboard_link as string,
-        setup_steps: data.setup_steps as SetupStep[],
-        workflow_url: data.workflow_url as string,
-        pages_enabled: data.pages_enabled as boolean,
-        workflow_triggered: data.workflow_triggered as boolean,
-        error: data.success ? undefined : (data.error as string),
-      };
+    if (githubToken && st.repos.length === 0 && !st.reposLoading) {
+      loadRepos(pid);
     }
-    return { success: false, error: 'Unsupported provider.' };
-  };
+  }, [states, githubToken, loadHostItems, loadRepos]);
 
-  // ── Render ──
+  // ── Render helper for a single provider tab ──
 
-  const currentProvider = selectedProvider;
+  const renderProviderContent = (pid: ProviderId) => {
+    const config = providerConfigs.find(c => c.id === pid)!;
+    const st = states[pid];
+    const Icon = config.icon;
+    const isActive = activeTab === pid;
+    if (!isActive) return null;
 
-  return (
-    <Dialog open={isOpen} onOpenChange={() => handleClose()}>
-      <DialogContent className="sm:max-w-[520px] max-h-[88vh] p-0 bg-[#0a1015] border-[#00E5FF]/15 overflow-hidden">
-        <motion.div
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ duration: 0.15 }}
-          className="flex flex-col max-h-[88vh]"
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.06] shrink-0">
+    const hasToken = !config.storageKey ? !!githubToken : !!st.token;
+
+    return (
+      <motion.div
+        key={pid}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.15 }}
+        className="flex-1 overflow-y-auto"
+      >
+        <div className="p-4 space-y-4">
+          {/* ── Connection Bar ── */}
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4 text-[#00E5FF]" />
-              <h2 className="text-sm font-semibold text-[#E0F7FA]">Deploy</h2>
-              {currentProvider && (
-                <Badge className="h-4 text-[9px] px-1.5 rounded-md" style={{
-                  background: `${currentProvider.color}15`,
-                  color: currentProvider.color,
-                  borderColor: `${currentProvider.color}30`,
-                }}>
-                  {currentProvider.name}
-                </Badge>
-              )}
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                style={{ background: `${config.color}12` }}>
+                <Icon className="w-3.5 h-3.5" style={{ color: config.color }} />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-[#E0F7FA]">{config.name}</p>
+                <p className="text-[10px] text-[#547B88]">{config.description}</p>
+              </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={handleClose}
-              className="text-[#547B88] hover:text-[#E0F7FA] hover:bg-white/5">
-              <X className="w-4 h-4" />
-            </Button>
+            {hasToken ? (
+              <div className="flex items-center gap-2">
+                <Badge className="h-5 text-[9px] bg-[#00E676]/10 text-[#00E676] border-[#00E676]/25 rounded-md">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#00E676] mr-1.5 inline-block" />
+                  Connected
+                </Badge>
+                <button onClick={() => handleChangeToken(pid)}
+                  className="text-[9px] text-[#547B88] hover:text-[#E0F7FA] transition-colors px-1.5 py-0.5 rounded hover:bg-white/5">
+                  Change
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => updateState(pid, { showTokenInput: true })}
+                className="text-[10px] font-medium text-[#00E5FF] hover:text-[#00E5FF]/80 transition-colors px-2.5 py-1 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/20">
+                Connect
+              </button>
+            )}
           </div>
 
-          {/* Steps */}
-          <AnimatePresence mode="wait">
-            <motion.div key={step} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }} className="flex-1 overflow-y-auto">
-
-              {/* ═══ SELECT PROVIDER ═══ */}
-              {step === 'select-provider' && (
-                <div className="p-4 space-y-2.5">
-                  <p className="text-xs text-[#547B88] mb-3">Choose where to deploy your project</p>
-                  {providers.map((provider) => {
-                    const hasToken = !provider.needsProviderToken || !!localStorage.getItem(provider.storageKey);
-                    const hasGitHub = !provider.needsGitHubToken || !!githubToken;
-                    const Icon = provider.icon;
-                    const isReady = hasToken && hasGitHub;
-                    return (
-                      <button key={provider.id} onClick={() => handleSelectProvider(provider)}
-                        className="group w-full text-left p-3.5 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.1] transition-all">
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-start gap-3">
-                            <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
-                              style={{ background: `${provider.color}12` }}>
-                              <Icon className="w-4 h-4" style={{ color: provider.color }} />
-                            </div>
-                            <div>
-                              <p className="text-sm font-medium text-[#E0F7FA]">{provider.name}</p>
-                              <p className="text-[11px] text-[#547B88] mt-0.5 leading-relaxed">{provider.description}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0 ml-3">
-                            {isReady ? (
-                              <Badge className="h-4 text-[8px] bg-[#00E676]/10 text-[#00E676] border-[#00E676]/25">Ready</Badge>
-                            ) : (
-                              <Badge className="h-4 text-[8px] bg-[#FFB74D]/10 text-[#FFB74D] border-[#FFB74D]/25">Setup</Badge>
-                            )}
-                            <ChevronRight className="w-3.5 h-3.5 text-[#547B88] group-hover:text-[#E0F7FA] transition-colors" />
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* ═══ API KEY ═══ */}
-              {step === 'api-key' && currentProvider && (
-                <div className="p-4 space-y-4">
-                  <div className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                    <Key className="w-4 h-4 text-[#00E5FF] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs text-[#E0F7FA] font-medium">{currentProvider.name} API Token</p>
-                      <p className="text-[11px] text-[#547B88] mt-1 leading-relaxed">{currentProvider.helpText}</p>
-                      <a href={currentProvider.helpUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-[11px] text-[#00E5FF] hover:underline inline-flex items-center gap-1 mt-1.5">
-                        Get token <ExternalLink className="w-2.5 h-2.5" />
-                      </a>
-                    </div>
+          {/* ── Token Input ── */}
+          {st.showTokenInput && !st.token && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+              <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.02] space-y-3">
+                <div className="flex items-start gap-2">
+                  <Key className="w-3.5 h-3.5 text-[#00E5FF] shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[10px] text-[#E0F7FA] font-medium">{config.name} API Token</p>
+                    <p className="text-[9px] text-[#547B88] mt-0.5 leading-relaxed">{config.helpText}</p>
+                    <a href={config.helpUrl} target="_blank" rel="noopener noreferrer"
+                      className="text-[9px] text-[#00E5FF] hover:underline inline-flex items-center gap-0.5 mt-1">
+                      Get token <ExternalLink className="w-2 h-2" />
+                    </a>
                   </div>
-                  <Input type="password" placeholder={`Enter ${currentProvider.name} API token...`}
-                    value={tokenInput} onChange={(e) => setTokenInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSaveToken()}
-                    className="h-10 text-sm font-mono bg-white/[0.03] border-white/[0.06] text-[#E0F7FA] placeholder:text-[#547B88]" />
-                  <Button onClick={handleSaveToken} disabled={!tokenInput.trim()}
-                    className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/85 text-[#03080a] font-semibold text-sm rounded-xl">
-                    Save & Continue
+                </div>
+                <div className="flex gap-2">
+                  <Input type="password" placeholder="Enter token..."
+                    value={st.tokenInput} onChange={(e) => updateState(pid, { tokenInput: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveToken(pid)}
+                    className="h-8 text-[11px] font-mono bg-white/[0.03] border-white/[0.06] text-[#E0F7FA] placeholder:text-[#547B88]" />
+                  <Button onClick={() => handleSaveToken(pid)} disabled={!st.tokenInput.trim()}
+                    className="h-8 px-3 bg-[#00E5FF] hover:bg-[#00E5FF]/85 text-[#03080a] font-semibold text-[11px] rounded-lg shrink-0">
+                    Save
                   </Button>
                 </div>
-              )}
+              </div>
+            </motion.div>
+          )}
 
-              {/* ═══ SELECT ITEM ═══ */}
-              {step === 'select-item' && currentProvider && (
-                <div className="p-4 space-y-3">
-                  <div className="flex gap-1 p-0.5 rounded-lg bg-white/[0.03]">
-                    <button onClick={() => setItemTab('host')}
-                      className={`flex-1 py-1.5 rounded-md text-xs transition-colors ${itemTab === 'host' ? 'bg-[#00E5FF]/15 text-[#00E5FF] font-medium' : 'text-[#547B88] hover:text-[#E0F7FA]'}`}>
-                      Existing {currentProvider.name} Projects
-                    </button>
-                    <button onClick={() => setItemTab('github')}
-                      className={`flex-1 py-1.5 rounded-md text-xs transition-colors ${itemTab === 'github' ? 'bg-[#00E5FF]/15 text-[#00E5FF] font-medium' : 'text-[#547B88] hover:text-[#E0F7FA]'}`}>
-                      GitHub Repos
-                    </button>
+          {/* ── Main Content ── */}
+          {hasToken && st.phase !== 'deploying' && st.phase !== 'monitoring' && st.phase !== 'result' && (
+            <div className="space-y-4">
+              {/* ── Existing Resources (collapsible) ── */}
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.01] overflow-hidden">
+                <button onClick={() => updateState(pid, { existingExpanded: !st.existingExpanded })}
+                  className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/[0.02] transition-colors">
+                  <div className="flex items-center gap-1.5">
+                    <Server className="w-3 h-3 text-[#547B88]" />
+                    <span className="text-[10px] font-medium text-[#547B88] uppercase tracking-wider">
+                      Existing {config.name} Resources
+                    </span>
+                    {st.hostItems.length > 0 && (
+                      <Badge className="h-4 text-[8px] bg-white/5 text-[#547B88] border-white/10 rounded-md">
+                        {st.hostItems.length}
+                      </Badge>
+                    )}
                   </div>
-
-                  {isLoadingItems ? (
-                    <div className="text-center py-12"><Loader2 className="w-5 h-5 text-[#00E5FF] animate-spin mx-auto mb-2" /><p className="text-xs text-[#547B88]">Loading...</p></div>
-                  ) : loadItemsError ? (
-                    <div className="text-center py-8">
-                      <AlertTriangle className="w-5 h-5 text-[#FF2A5F] mx-auto mb-2" />
-                      <p className="text-xs text-[#FF2A5F]">{loadItemsError}</p>
-                      <Button variant="ghost" size="sm" onClick={() => savedToken && loadItems(currentProvider, savedToken)}
-                        className="mt-2 text-[10px] text-[#00E5FF]"><RefreshCw className="w-3 h-3 mr-1" /> Retry</Button>
-                    </div>
-                  ) : itemTab === 'host' ? (
-                    hostItems.length === 0 ? (
-                      <div className="text-center py-8">
-                        <p className="text-xs text-[#547B88]">No existing {currentProvider.name} projects found</p>
-                        <p className="text-[10px] text-[#547B88] mt-1">Switch to &quot;GitHub Repos&quot; to create a new deployment</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        {hostItems.map((item) => (
-                          <button key={item.id} onClick={() => { setSelectedHostItem(item.id); setSelectedHostItemName(item.url || item.name); setSelectedRepo(''); setStep('confirm'); }}
-                            className="w-full text-left p-2.5 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.04] hover:border-white/[0.08] transition-all flex items-center justify-between group">
-                            <div className="min-w-0">
-                              <p className="text-xs text-[#E0F7FA] font-mono truncate">{item.name}</p>
-                              {item.url && <p className="text-[10px] text-[#547B88] truncate mt-0.5">{item.url}</p>}
-                            </div>
-                            <ChevronRight className="w-3 h-3 text-[#547B88] group-hover:text-[#E0F7FA] shrink-0" />
-                          </button>
-                        ))}
-                      </div>
-                    )
+                  {st.existingExpanded ? (
+                    <ChevronUp className="w-3 h-3 text-[#547B88]" />
                   ) : (
-                    repos.length === 0 ? (
-                      <div className="text-center py-8">
-                        <p className="text-xs text-[#547B88]">{githubToken ? 'No repos found' : 'Connect GitHub to browse repos'}</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1 max-h-[40vh] overflow-y-auto">
-                        {repos.slice(0, 25).map((repo) => (
-                          <button key={repo.id} onClick={() => handleSelectRepo(repo.full_name)}
-                            className="w-full text-left p-2.5 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.04] hover:border-white/[0.08] transition-all flex items-center justify-between group">
-                            <div className="min-w-0">
-                              <p className="text-xs text-[#E0F7FA] font-mono truncate">{repo.full_name}</p>
-                              <p className="text-[10px] text-[#547B88] truncate">{repo.description || 'No description'}</p>
-                            </div>
-                            <ChevronRight className="w-3 h-3 text-[#547B88] group-hover:text-[#E0F7FA] shrink-0" />
-                          </button>
-                        ))}
-                      </div>
-                    )
+                    <ChevronDown className="w-3 h-3 text-[#547B88]" />
                   )}
-                </div>
-              )}
+                </button>
 
-              {/* ═══ SELECT BRANCH ═══ */}
-              {step === 'select-branch' && (
-                <div className="p-4 space-y-3">
-                  <p className="text-xs text-[#547B88]">
-                    Select branch for <span className="text-[#E0F7FA] font-mono">{selectedRepo}</span>
-                  </p>
-                  <div className="space-y-1">
-                    {branches.map((b) => (
-                      <button key={b.name} onClick={() => { setSelectedBranch(b.name); setSelectedHostItem(''); setStep('confirm'); }}
-                        className={`w-full text-left p-2.5 rounded-lg border transition-all flex items-center justify-between ${
-                          selectedBranch === b.name ? 'border-[#00E5FF]/25 bg-[#00E5FF]/5' : 'border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.04]'
-                        }`}>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-[#E0F7FA] font-mono">{b.name}</span>
-                          {b.default && <Badge className="h-4 text-[8px] bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/25">default</Badge>}
-                        </div>
-                        <ChevronRight className="w-3 h-3 text-[#547B88]" />
-                      </button>
-                    ))}
+                <AnimatePresence>
+                  {st.existingExpanded && (
+                    <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
+                      <div className="border-t border-white/[0.04]">
+                        {st.hostItemsLoading ? (
+                          <div className="text-center py-6">
+                            <Loader2 className="w-4 h-4 text-[#00E5FF] animate-spin mx-auto mb-1" />
+                            <p className="text-[10px] text-[#547B88]">Loading...</p>
+                          </div>
+                        ) : st.hostItemsError ? (
+                          <div className="text-center py-4">
+                            <AlertTriangle className="w-3.5 h-3.5 text-[#FF2A5F] mx-auto mb-1" />
+                            <p className="text-[10px] text-[#FF2A5F]">{st.hostItemsError}</p>
+                            <button onClick={() => loadHostItems(pid)}
+                              className="text-[9px] text-[#00E5FF] hover:underline mt-1 inline-flex items-center gap-0.5">
+                              <RefreshCw className="w-2.5 h-2.5" /> Retry
+                            </button>
+                          </div>
+                        ) : st.hostItems.length === 0 ? (
+                          <div className="text-center py-4">
+                            <p className="text-[10px] text-[#547B88]">No existing {config.name} resources</p>
+                          </div>
+                        ) : (
+                          <div className="max-h-48 overflow-y-auto">
+                            {st.hostItems.map((item) => (
+                              <div key={item.id} className="flex items-center justify-between px-3 py-2 border-b border-white/[0.03] last:border-0 group hover:bg-white/[0.02] transition-colors">
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[11px] text-[#E0F7FA] font-mono truncate">{item.name}</p>
+                                  {item.url && <p className="text-[9px] text-[#547B88] truncate">{item.url}</p>}
+                                </div>
+                                <button onClick={() => handleRedeploy(pid, item.id)}
+                                  className="text-[9px] font-medium text-[#00E5FF] hover:text-[#00E5FF]/80 px-2 py-1 rounded-md hover:bg-[#00E5FF]/10 transition-colors shrink-0 ml-2 opacity-70 group-hover:opacity-100">
+                                  Redeploy
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* ── New Deployment ── */}
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.01] overflow-hidden">
+                <div className="px-3 py-2.5 border-b border-white/[0.04]">
+                  <div className="flex items-center gap-1.5">
+                    <Rocket className="w-3 h-3 text-[#00E5FF]" />
+                    <span className="text-[10px] font-medium text-[#547B88] uppercase tracking-wider">
+                      New Deployment
+                    </span>
                   </div>
                 </div>
-              )}
-
-              {/* ═══ CONFIRM ═══ */}
-              {step === 'confirm' && currentProvider && (
-                <div className="p-4 space-y-4">
-                  <div className="p-3.5 rounded-xl border border-white/[0.06] bg-white/[0.02] space-y-2.5">
-                    <h3 className="text-[10px] font-semibold text-[#547B88] uppercase tracking-wider">Deployment Summary</h3>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-[#547B88]">Provider</span><span className="text-[#E0F7FA]">{currentProvider.name}</span></div>
-                      {itemTab === 'host' && <div className="flex justify-between"><span className="text-[#547B88]">Project</span><span className="text-[#E0F7FA] font-mono truncate max-w-[200px]">{selectedHostItemName || selectedHostItem}</span></div>}
-                      {selectedRepo && <div className="flex justify-between"><span className="text-[#547B88]">Repository</span><span className="text-[#E0F7FA] font-mono truncate max-w-[200px]">{selectedRepo}</span></div>}
-                      {selectedBranch && <div className="flex justify-between"><span className="text-[#547B88]">Branch</span><span className="text-[#E0F7FA] font-mono">{selectedBranch}</span></div>}
-                      <div className="flex justify-between"><span className="text-[#547B88]">Action</span><span className="text-[#E0F7FA]">{itemTab === 'host' ? 'Redeploy' : 'Create & Deploy'}</span></div>
+                <div className="p-3 space-y-3">
+                  {!githubToken && (config.needsGitHubToken || config.id === 'github-pages') ? (
+                    <div className="text-center py-4">
+                      <Key className="w-4 h-4 text-[#FFB74D] mx-auto mb-2" />
+                      <p className="text-[11px] text-[#FFB74D] font-medium">GitHub token required</p>
+                      <p className="text-[10px] text-[#547B88] mt-1">Connect GitHub in the Agents tab to deploy repos.</p>
                     </div>
-                    {currentProvider.id === 'netlify' && itemTab === 'github' && (
-                      <div className="mt-2 p-2 rounded-lg bg-[#FFB74D]/5 border border-[#FFB74D]/10">
-                        <p className="text-[10px] text-[#FFB74D] leading-relaxed">
-                          Netlify will create a bare site. Connect your repo in the Netlify dashboard to enable auto-deploys.
-                        </p>
-                      </div>
-                    )}
-                    {currentProvider.id === 'github-pages' && itemTab === 'github' && (
-                      <div className="mt-2 p-2 rounded-lg bg-[#00E5FF]/5 border border-[#00E5FF]/10">
-                        <p className="text-[10px] text-[#00E5FF] leading-relaxed">
-                          Deploys via GitHub Actions — workflow file will be pushed to your repo automatically.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  <Button onClick={handleConfirm} disabled={!canDeploy || isDeploying}
-                    className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/85 text-[#03080a] font-semibold text-sm rounded-xl disabled:opacity-30 disabled:cursor-not-allowed">
-                    <Globe className="w-4 h-4 mr-2" />
-                    {itemTab === 'host' ? 'Redeploy Now' : 'Create & Deploy'}
-                  </Button>
-                </div>
-              )}
-
-              {/* ═══ DEPLOYING ═══ */}
-              {step === 'deploying' && (
-                <div className="p-8 text-center space-y-3">
-                  <Loader2 className="w-8 h-8 text-[#00E5FF] animate-spin mx-auto" />
-                  <p className="text-sm text-[#E0F7FA]">Creating deployment...</p>
-                  <p className="text-xs text-[#547B88]">Communicating with {currentProvider?.name}</p>
-                  {isMonitoring && deploymentStatus && (
-                    <div className="mt-4 text-left">
-                      <p className="text-[10px] text-[#547B88]">{deploymentStatus.message}</p>
+                  ) : st.reposLoading ? (
+                    <div className="text-center py-4">
+                      <Loader2 className="w-4 h-4 text-[#00E5FF] animate-spin mx-auto" />
                     </div>
-                  )}
-                </div>
-              )}
-
-              {/* ═══ RESULT ═══ */}
-              {step === 'result' && deployResult && (
-                <div className="p-5 space-y-4">
-                  {deployResult.success ? (
+                  ) : st.repos.length === 0 ? (
+                    <div className="text-center py-4">
+                      <p className="text-[10px] text-[#547B88]">No GitHub repos found</p>
+                    </div>
+                  ) : (
                     <>
-                      <div className="text-center space-y-3">
-                        <div className="w-12 h-12 rounded-full bg-[#00E676]/10 flex items-center justify-center mx-auto border border-[#00E676]/20">
-                          <CheckCircle2 className="w-6 h-6 text-[#00E676]" />
-                        </div>
-                        <h3 className="text-sm font-semibold text-[#00E676]">Deployment Created</h3>
-                      </div>
-
-                      {/* Setup Steps */}
-                      {deployResult.setup_steps && deployResult.setup_steps.length > 0 && (
-                        <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.02] space-y-2">
-                          <h4 className="text-[10px] font-semibold text-[#547B88] uppercase tracking-wider">Setup Progress</h4>
-                          {deployResult.setup_steps.map((s) => (
-                            <div key={s.step} className="flex items-center gap-2 text-xs">
-                              {s.done ? (
-                                <CheckCircle2 className="w-3.5 h-3.5 text-[#00E676] shrink-0" />
-                              ) : (
-                                <div className="w-3.5 h-3.5 rounded-full border border-[#547B88]/40 shrink-0" />
+                      {/* Repo selector */}
+                      <div>
+                        <label className="text-[9px] text-[#547B88] uppercase tracking-wider font-medium mb-1 block">Repository</label>
+                        <div className="max-h-32 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                          {st.repos.slice(0, 20).map((repo) => (
+                            <button key={repo.id} onClick={() => {
+                              updateState(pid, { selectedRepo: repo.full_name, selectedBranch: '', branches: [] });
+                              loadBranches(pid, repo.full_name);
+                            }}
+                              className={`w-full text-left px-2.5 py-2 border-b border-white/[0.03] last:border-0 transition-colors flex items-center justify-between group ${
+                                st.selectedRepo === repo.full_name ? 'bg-[#00E5FF]/5 border-l-2 border-l-[#00E5FF]' : 'hover:bg-white/[0.03]'
+                              }`}>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] text-[#E0F7FA] font-mono truncate">{repo.full_name}</p>
+                                <p className="text-[9px] text-[#547B88] truncate">{repo.description || 'No description'}</p>
+                              </div>
+                              {st.selectedRepo === repo.full_name && (
+                                <CheckCircle2 className="w-3 h-3 text-[#00E5FF] shrink-0 ml-2" />
                               )}
-                              {s.link ? (
-                                <a href={s.link} target="_blank" rel="noopener noreferrer"
-                                  className="text-[#E0F7FA] hover:text-[#00E5FF] hover:underline flex-1 flex items-center gap-1">
-                                  {s.text} <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                                </a>
-                              ) : (
-                                <span className={s.done ? 'text-[#E0F7FA]' : 'text-[#547B88]'}>{s.text}</span>
-                              )}
-                            </div>
+                            </button>
                           ))}
                         </div>
-                      )}
+                      </div>
 
-                      {/* Manual repo link notice */}
-                      {deployResult.needs_manual_repo_link && (
-                        <div className="p-3 rounded-xl bg-[#FFB74D]/5 border border-[#FFB74D]/15 space-y-2">
-                          <div className="flex items-center gap-1.5">
-                            <AlertTriangle className="w-3.5 h-3.5 text-[#FFB74D]" />
-                            <span className="text-[11px] font-medium text-[#FFB74D]">Manual step required</span>
-                          </div>
-                          <p className="text-[10px] text-[#547B88] leading-relaxed">
-                            Connect your GitHub repo in the Netlify dashboard to enable automatic builds on push.
-                          </p>
-                          {deployResult.dashboard_link && (
-                            <a href={deployResult.dashboard_link} target="_blank" rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-[10px] text-[#00E5FF] hover:underline">
-                              Open Netlify Dashboard <ExternalLink className="w-2.5 h-2.5" />
-                            </a>
+                      {/* Branch selector */}
+                      {st.selectedRepo && (
+                        <div>
+                          <label className="text-[9px] text-[#547B88] uppercase tracking-wider font-medium mb-1 block">Branch</label>
+                          {st.branchesLoading ? (
+                            <div className="text-center py-2">
+                              <Loader2 className="w-3 h-3 text-[#00E5FF] animate-spin mx-auto" />
+                            </div>
+                          ) : st.branches.length > 0 ? (
+                            <div className="max-h-24 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                              {st.branches.map((b) => (
+                                <button key={b.name} onClick={() => updateState(pid, { selectedBranch: b.name })}
+                                  className={`w-full text-left px-2.5 py-1.5 border-b border-white/[0.03] last:border-0 transition-colors flex items-center justify-between ${
+                                    st.selectedBranch === b.name ? 'bg-[#00E5FF]/5 border-l-2 border-l-[#00E5FF]' : 'hover:bg-white/[0.03]'
+                                  }`}>
+                                  <span className="text-[11px] text-[#E0F7FA] font-mono">{b.name}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    {b.default && <Badge className="h-3.5 text-[7px] bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/25 rounded px-1">default</Badge>}
+                                    {st.selectedBranch === b.name && <CheckCircle2 className="w-3 h-3 text-[#00E5FF]" />}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-[#547B88] text-center py-2">No branches found</p>
                           )}
                         </div>
                       )}
 
-                      {/* Message */}
-                      {deployResult.message && !deployResult.needs_manual_repo_link && (
-                        <p className="text-[11px] text-[#547B88] leading-relaxed text-center">{deployResult.message}</p>
-                      )}
-
-                      {/* URLs */}
-                      <div className="space-y-1.5">
-                        {deployResult.url && (
-                          <a href={deployResult.url} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
-                            <Globe className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
-                            <span className="text-[11px] text-[#00E5FF] truncate flex-1 group-hover:underline">{deployResult.url}</span>
-                            <ExternalLink className="w-2.5 h-2.5 text-[#547B88] shrink-0" />
-                          </a>
-                        )}
-                        {deployResult.workflow_url && (
-                          <a href={deployResult.workflow_url} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
-                            <Zap className="w-3.5 h-3.5 text-[#B388FF] shrink-0" />
-                            <span className="text-[11px] text-[#B388FF] truncate flex-1 group-hover:underline">GitHub Actions</span>
-                            <ExternalLink className="w-2.5 h-2.5 text-[#547B88] shrink-0" />
-                          </a>
-                        )}
-                        {deployResult.dashboard_link && !deployResult.needs_manual_repo_link && (
-                          <a href={deployResult.dashboard_link} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
-                            <ExternalLink className="w-3.5 h-3.5 text-[#547B88] shrink-0" />
-                            <span className="text-[11px] text-[#547B88] truncate flex-1 group-hover:underline">{currentProvider?.name} Dashboard</span>
-                            <ExternalLink className="w-2.5 h-2.5 text-[#547B88] shrink-0" />
-                          </a>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="text-center space-y-3">
-                        <div className="w-12 h-12 rounded-full bg-[#FF2A5F]/10 flex items-center justify-center mx-auto border border-[#FF2A5F]/20">
-                          <X className="w-6 h-6 text-[#FF2A5F]" />
-                        </div>
-                        <h3 className="text-sm font-semibold text-[#FF2A5F]">Deployment Failed</h3>
-                        <p className="text-xs text-[#547B88] max-w-xs mx-auto leading-relaxed">{deployResult.error || 'Unknown error'}</p>
-                        {deployResult.hint && (
-                          <p className="text-[10px] text-[#FFB74D] max-w-xs mx-auto leading-relaxed">{deployResult.hint}</p>
-                        )}
-                      </div>
+                      {/* Deploy button */}
+                      <Button
+                        onClick={() => handleDeployFromRepo(pid)}
+                        disabled={!st.selectedRepo || !st.selectedBranch}
+                        className="w-full h-9 bg-[#00E5FF] hover:bg-[#00E5FF]/85 text-[#03080a] font-semibold text-xs rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Rocket className="w-3.5 h-3.5 mr-1.5" />
+                        Deploy to {config.name}
+                      </Button>
                     </>
                   )}
-
-                  {/* Actions */}
-                  <div className="flex gap-2">
-                    {deployResult.success ? (
-                      <Button onClick={handleClose}
-                        className="flex-1 h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl">Done</Button>
-                    ) : (
-                      <Button onClick={() => { setDeployResult(null); setStep('confirm'); }}
-                        className="w-full h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl">
-                        <ArrowLeft className="w-3 h-3 mr-1" /> Go Back & Retry
-                      </Button>
-                    )}
-                    <Button onClick={handleClose}
-                      className={`${deployResult.success ? 'flex-1' : 'w-full'} h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl`}>
-                      {deployResult.success ? 'Deploy Another' : 'Close'}
-                    </Button>
-                  </div>
                 </div>
-              )}
-            </motion.div>
-          </AnimatePresence>
-
-          {/* Back Button */}
-          {step !== 'select-provider' && step !== 'result' && step !== 'deploying' && (
-            <div className="px-5 py-2.5 border-t border-white/[0.06] shrink-0">
-              <Button variant="ghost" onClick={() => {
-                if (step === 'select-branch') setStep('select-item');
-                else if (step === 'confirm') setStep(selectedRepo && selectedBranch && itemTab === 'github' ? 'select-branch' : 'select-item');
-                else if (step === 'select-item') setStep(selectedProvider?.needsProviderToken && !localStorage.getItem(selectedProvider.storageKey) ? 'api-key' : 'select-provider');
-              }} className="text-xs text-[#547B88] hover:text-[#E0F7FA]">
-                <ArrowLeft className="w-3 h-3 mr-1" /> Back
-              </Button>
+              </div>
             </div>
           )}
+
+          {/* ── Deploying State ── */}
+          {(st.phase === 'deploying' || st.phase === 'monitoring') && (
+            <div className="text-center py-10 space-y-3">
+              <Loader2 className="w-7 h-7 text-[#00E5FF] animate-spin mx-auto" />
+              <p className="text-sm text-[#E0F7FA]">
+                {st.isRedeploy ? 'Triggering redeploy...' : 'Creating deployment...'}
+              </p>
+              <p className="text-[10px] text-[#547B88]">Communicating with {config.name}</p>
+              {st.isMonitoring && st.deploymentStatus && (
+                <div className="mt-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04] text-left">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-2 h-2 rounded-full bg-[#FFB74D] animate-pulse" />
+                    <span className="text-[10px] font-medium text-[#FFB74D]">Monitoring workflow</span>
+                  </div>
+                  <p className="text-[10px] text-[#547B88]">{st.deploymentStatus.message}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Result State ── */}
+          {st.phase === 'result' && st.deployResult && (
+            <div className="space-y-3">
+              {st.deployResult.success ? (
+                <>
+                  {/* Success */}
+                  <div className="text-center py-4 space-y-2">
+                    <div className="w-10 h-10 rounded-full bg-[#00E676]/10 flex items-center justify-center mx-auto border border-[#00E676]/20">
+                      <CheckCircle2 className="w-5 h-5 text-[#00E676]" />
+                    </div>
+                    <h3 className="text-xs font-semibold text-[#00E676]">Deployment Created</h3>
+                  </div>
+
+                  {/* Setup Steps */}
+                  {st.deployResult.setup_steps && st.deployResult.setup_steps.length > 0 && (
+                    <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.02] space-y-1.5">
+                      <h4 className="text-[9px] font-semibold text-[#547B88] uppercase tracking-wider">Setup Progress</h4>
+                      {st.deployResult.setup_steps.map((step) => (
+                        <div key={step.step} className="flex items-center gap-2 text-[10px]">
+                          {step.done ? (
+                            <CheckCircle2 className="w-3 h-3 text-[#00E676] shrink-0" />
+                          ) : (
+                            <div className="w-3 h-3 rounded-full border border-[#547B88]/40 shrink-0" />
+                          )}
+                          {step.link ? (
+                            <a href={step.link} target="_blank" rel="noopener noreferrer"
+                              className="text-[#E0F7FA] hover:text-[#00E5FF] hover:underline flex-1 flex items-center gap-0.5">
+                              {step.text} <ExternalLink className="w-2 h-2 shrink-0" />
+                            </a>
+                          ) : (
+                            <span className={step.done ? 'text-[#E0F7FA]' : 'text-[#547B88]'}>{step.text}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Manual repo link notice */}
+                  {st.deployResult.needs_manual_repo_link && (
+                    <div className="p-3 rounded-xl bg-[#FFB74D]/5 border border-[#FFB74D]/15 space-y-1.5">
+                      <div className="flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 text-[#FFB74D]" />
+                        <span className="text-[10px] font-medium text-[#FFB74D]">Manual step required</span>
+                      </div>
+                      <p className="text-[9px] text-[#547B88] leading-relaxed">
+                        Connect your GitHub repo in the {config.name} dashboard to enable automatic builds on push.
+                      </p>
+                      {st.deployResult.dashboard_link && (
+                        <a href={st.deployResult.dashboard_link} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-0.5 text-[9px] text-[#00E5FF] hover:underline">
+                          Open {config.name} Dashboard <ExternalLink className="w-2 h-2" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Message */}
+                  {st.deployResult.message && !st.deployResult.needs_manual_repo_link && (
+                    <p className="text-[10px] text-[#547B88] leading-relaxed text-center">{st.deployResult.message}</p>
+                  )}
+
+                  {/* URLs */}
+                  <div className="space-y-1">
+                    {st.deployResult.url && (
+                      <a href={st.deployResult.url} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
+                        <Globe className="w-3 h-3 text-[#00E5FF] shrink-0" />
+                        <span className="text-[10px] text-[#00E5FF] truncate flex-1 group-hover:underline">{st.deployResult.url}</span>
+                        <ExternalLink className="w-2 h-2 text-[#547B88] shrink-0" />
+                      </a>
+                    )}
+                    {st.deployResult.workflow_url && (
+                      <a href={st.deployResult.workflow_url} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
+                        <Zap className="w-3 h-3 text-[#B388FF] shrink-0" />
+                        <span className="text-[10px] text-[#B388FF] truncate flex-1 group-hover:underline">GitHub Actions</span>
+                        <ExternalLink className="w-2 h-2 text-[#547B88] shrink-0" />
+                      </a>
+                    )}
+                    {st.deployResult.dashboard_link && !st.deployResult.needs_manual_repo_link && (
+                      <a href={st.deployResult.dashboard_link} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors group">
+                        <ExternalLink className="w-3 h-3 text-[#547B88] shrink-0" />
+                        <span className="text-[10px] text-[#547B88] truncate flex-1 group-hover:underline">{config.name} Dashboard</span>
+                        <ExternalLink className="w-2 h-2 text-[#547B88] shrink-0" />
+                      </a>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-2 pt-1">
+                    <Button onClick={() => handleDone(pid)}
+                      className="flex-1 h-8 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-[10px] rounded-lg">
+                      Deploy Another
+                    </Button>
+                    <Button onClick={handleClose}
+                      className="flex-1 h-8 bg-[#00E5FF]/10 hover:bg-[#00E5FF]/15 text-[#00E5FF] text-[10px] rounded-lg border border-[#00E5FF]/20">
+                      Done
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Failure */}
+                  <div className="text-center py-4 space-y-2">
+                    <div className="w-10 h-10 rounded-full bg-[#FF2A5F]/10 flex items-center justify-center mx-auto border border-[#FF2A5F]/20">
+                      <X className="w-5 h-5 text-[#FF2A5F]" />
+                    </div>
+                    <h3 className="text-xs font-semibold text-[#FF2A5F]">Deployment Failed</h3>
+                    <p className="text-[10px] text-[#547B88] max-w-[280px] mx-auto leading-relaxed">{st.deployResult.error || 'Unknown error'}</p>
+                    {st.deployResult.hint && (
+                      <p className="text-[9px] text-[#FFB74D] max-w-[280px] mx-auto leading-relaxed">{st.deployResult.hint}</p>
+                    )}
+                    {st.deployResult.dashboard_link && st.deployResult.needs_manual_repo_link && (
+                      <a href={st.deployResult.dashboard_link} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-0.5 text-[9px] text-[#00E5FF] hover:underline">
+                        Open {config.name} Dashboard <ExternalLink className="w-2 h-2" />
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button onClick={() => handleRetry(pid)}
+                      className="flex-1 h-8 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-[10px] rounded-lg">
+                      <RefreshCw className="w-3 h-3 mr-1" /> Retry
+                    </Button>
+                    <Button onClick={() => handleDone(pid)}
+                      className="flex-1 h-8 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-[10px] rounded-lg">
+                      Back
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    );
+  };
+
+  // ── Main render ──
+
+  return (
+    <Dialog open={isOpen} onOpenChange={() => handleClose()}>
+      <DialogContent className="sm:max-w-[600px] max-h-[90vh] p-0 bg-[#0a1015] border-[#00E5FF]/15 overflow-hidden">
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.15 }}
+          className="flex flex-col max-h-[90vh]"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] shrink-0">
+            <div className="flex items-center gap-2">
+              <Rocket className="w-4 h-4 text-[#00E5FF]" />
+              <h2 className="text-sm font-semibold text-[#E0F7FA]">Deploy</h2>
+            </div>
+            <Button variant="ghost" size="icon" onClick={handleClose}
+              className="text-[#547B88] hover:text-[#E0F7FA] hover:bg-white/5 h-7 w-7">
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+
+          {/* Provider Tabs */}
+          <div className="flex border-b border-white/[0.06] shrink-0 px-2 pt-2">
+            {providerConfigs.map((pc) => {
+              const Icon = pc.icon;
+              const isActive = activeTab === pc.id;
+              return (
+                <button key={pc.id} onClick={() => handleTabSwitch(pc.id)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-1 text-[11px] font-medium rounded-t-lg transition-all relative ${
+                    isActive
+                      ? 'text-[#00E5FF] bg-white/[0.03]'
+                      : 'text-[#547B88] hover:text-[#E0F7FA] hover:bg-white/[0.01]'
+                  }`}>
+                  <Icon className="w-3 h-3" style={{ color: isActive ? '#00E5FF' : pc.color }} />
+                  <span className="hidden sm:inline">{pc.name}</span>
+                  <span className="sm:hidden">{pc.id === 'github-pages' ? 'Pages' : pc.name.slice(0, 4)}</span>
+                  {isActive && (
+                    <motion.div layoutId="activeTab"
+                      className="absolute bottom-0 left-1 right-1 h-[2px] bg-[#00E5FF] rounded-full"
+                      transition={{ duration: 0.2 }} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tab Content */}
+          <AnimatePresence mode="wait">
+            {renderProviderContent(activeTab)}
+          </AnimatePresence>
         </motion.div>
       </DialogContent>
     </Dialog>
