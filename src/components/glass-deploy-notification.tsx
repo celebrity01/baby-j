@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { GitHubRepo } from '@/lib/jules-client';
-import { listGitHubRepos, listBranches, deployVercel, deployNetlify, deployRender, deployPages, createVercelProject, createNetlifySite } from '@/lib/jules-client';
+import { listGitHubRepos, listBranches, deployVercel, deployNetlify, deployRender, deployPages, createVercelProject, createNetlifySite, createRenderService } from '@/lib/jules-client';
 
 interface GlassDeployNotificationProps {
   githubToken: string | null;
@@ -299,7 +299,7 @@ export default function GlassDeployNotification({
       return { success: true, url };
     } else if (provider.id === 'github-pages') {
       const [owner, repo] = itemId.split('/');
-      const data = await deployPages(token, { owner, repo }) as Record<string, unknown>;
+      const data = await deployPages(token, { owner, repo, branch: selectedBranch }) as Record<string, unknown>;
       const url = `https://${owner}.github.io/${repo}/`;
       return { success: true, url };
     } else {
@@ -325,37 +325,21 @@ export default function GlassDeployNotification({
       const url = (data.url as string) || (data.alias as string[])?.[0] || `https://${repo}-vercel.app`;
       return { success: true, url };
     } else if (provider.id === 'netlify') {
+      // Cross-system: pass githubToken so API can resolve repo to numeric ID
       const data = await createNetlifySite(token, {
         name: repo,
         repoUrl: `https://github.com/${owner}/${repo}`,
         branch,
-      }) as Record<string, unknown>;
+      }, githubToken) as Record<string, unknown>;
       const url = (data.url as string) || (data.ssl_url as string) || '';
       return { success: true, url };
     } else if (provider.id === 'render') {
-      const res = await fetch('/api/render/services', {
-        method: 'POST',
-        headers: {
-          'X-Render-Api-Key': token,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          type: 'web_service',
-          name: repo,
-          serviceDetails: {
-            env: 'node',
-            buildCommand: 'npm install && npm run build',
-            startCommand: 'npm start',
-          },
-          repo: `https://github.com/${owner}/${repo}`,
-          branch,
-        }),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || errData.message || `Render service creation failed (${res.status})`);
-      }
-      const data = await res.json() as Record<string, unknown>;
+      const data = await createRenderService(token, {
+        name: repo,
+        repoUrl: `https://github.com/${owner}/${repo}`,
+        branch,
+        runtime: 'node',
+      }) as Record<string, unknown>;
       const url = (data.url as string) || (data.serviceDetails as Record<string, string>)?.url || '';
       return { success: true, url };
     } else if (provider.id === 'github-pages') {

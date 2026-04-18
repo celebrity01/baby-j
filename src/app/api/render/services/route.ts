@@ -26,8 +26,8 @@ export async function GET(req: NextRequest) {
     // Normalize the response to a consistent format
     const services = (Array.isArray(data) ? data : []).map((s: Record<string, unknown>) => ({
       id: s.id,
-      name: s.serviceDetails?.name || s.name || s.id,
-      url: s.serviceDetails?.url || s.url,
+      name: (s.serviceDetails as Record<string, unknown>)?.name || s.name || s.id,
+      url: (s.serviceDetails as Record<string, unknown>)?.url || s.url,
       type: s.type,
       state: s.state,
     }));

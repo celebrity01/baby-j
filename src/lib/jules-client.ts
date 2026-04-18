@@ -88,9 +88,7 @@ export interface GitHubBranch {
 
 // ===== Sanitize Header Value =====
 
-export function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+// sanitizeHeaderValue is in api-utils.ts for server-side use
 
 // ===== Jules API Calls =====
 
@@ -307,14 +305,20 @@ export async function listNetlifySites(token: string): Promise<unknown[]> {
 
 export async function createNetlifySite(
   token: string,
-  params: { name: string; repoUrl?: string; branch?: string }
+  params: { name: string; repoUrl?: string; branch?: string },
+  githubToken?: string | null
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    "X-Netlify-Token": token,
+    "Content-Type": "application/json",
+  };
+  // Cross-system: forward GitHub token so the API route can resolve repo metadata
+  if (githubToken) {
+    headers["X-GitHub-Token"] = githubToken;
+  }
   const res = await fetch(`${NETLIFY_BASE}/sites/create`, {
     method: "POST",
-    headers: {
-      "X-Netlify-Token": token,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(params),
   });
   if (!res.ok) {
@@ -351,15 +355,19 @@ export async function createRenderService(
   token: string,
   params: { name: string; repoUrl?: string; branch?: string; runtime?: string }
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    "X-Render-Api-Key": token,
+    "Content-Type": "application/json",
+  };
   const res = await fetch(`${RENDER_BASE}/services`, {
     method: "POST",
-    headers: {
-      "X-Render-Api-Key": token,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error(`Failed to create Render service: ${res.status}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || errData.message || `Failed to create Render service (${res.status})`);
+  }
   return res.json();
 }
 

@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     const projects = (data.projects || []).map((p: Record<string, unknown>) => ({
       id: p.id,
       name: p.name,
-      url: p.alias?.[0] || p.targets?.production?.url || `https://${p.name}-vercel.app`,
+      url: (p.alias as string[] | undefined)?.[0] || (p.targets as Record<string, Record<string, string>>)?.production?.url || `https://${p.name}-vercel.app`,
     }));
 
     return NextResponse.json(projects);
