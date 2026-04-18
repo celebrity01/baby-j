@@ -69,6 +69,10 @@ async function cmdDeploy(args) {
       process.exit(1);
     }
     const [owner, name] = repo.split("/");
+    if (!owner || !name) {
+       logError("Invalid repo format. Use owner/repo");
+       process.exit(1);
+    }
     log(`  Starting ${C.bold}Smart Deploy${C.reset} for ${C.cyan}${repo}${C.reset}...`);
 
     try {
@@ -95,9 +99,32 @@ async function cmdDeploy(args) {
     return;
   }
 
+  if (provider === "list") {
+    logBold("\n  Active Deployments\n");
+    try {
+      const res = await fetch("http://localhost:3000/api/deploy/projects", {
+        headers: {
+          "X-GitHub-Token": config.github || "",
+          "X-Vercel-Token": config.vercel || "",
+          "X-Netlify-Token": config.netlify || "",
+          "X-Render-Api-Key": config.render || "",
+        }
+      });
+      const projects = await res.json();
+      if (!Array.isArray(projects)) throw new Error("Failed to fetch projects");
+
+      projects.forEach(p => {
+        log(`  ${C.bold}${p.name.padEnd(20)}${C.reset} ${C.cyan}${p.provider.padEnd(15)}${C.reset} ${C.dim}${p.url}${C.reset}`);
+      });
+    } catch (e) {
+      logError(e.message);
+    }
+    return;
+  }
+
   logBold("\n  Deploy Commands\n");
   log("  node cli.js deploy smart <repo> [branch]    One-click smart deploy");
-  log("  node cli.js deploy <provider> ...           Standard provider deploy");
+  log("  node cli.js deploy list                     List all deployments");
 }
 
 async function main() {
@@ -107,8 +134,23 @@ async function main() {
 
   if (command === "deploy") {
     await cmdDeploy(rest);
+  } else if (command === "auth") {
+    const action = rest[0];
+    const key = rest[1];
+    const val = rest[2];
+    const config = loadConfig();
+    if (action === "set") {
+      config[key] = val;
+      saveConfig(config);
+      logSuccess(`${key} token saved`);
+    } else {
+      log("Usage: node cli.js auth set <provider> <token>");
+    }
   } else {
-    logDim("Run: node cli.js deploy smart <owner/repo>");
+    logBold("Baby J CLI");
+    log("  node cli.js deploy smart <owner/repo>");
+    log("  node cli.js deploy list");
+    log("  node cli.js auth set <provider> <token>");
   }
 }
 
