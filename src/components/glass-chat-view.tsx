@@ -458,35 +458,37 @@ export default function GlassChatView({
         )}
       </div>
 
-      {/* Approval Banner */}
+      {/* Approval Banner + Message Input (always visible during AWAITING) */}
       {needsApproval && (
         <motion.div
           initial={{ y: 100 }}
           animate={{ y: 0 }}
-          className="glass-nav px-4 py-3"
+          className="glass-nav px-4 py-2.5"
         >
           <div className="flex items-center justify-between max-w-3xl mx-auto">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-[#B388FF] animate-pulse" />
-              <span className="text-sm text-[#B388FF]">Agent is awaiting plan approval</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-[#B388FF] animate-pulse shrink-0" />
+              <span className="text-xs text-[#B388FF] truncate">Agent is awaiting plan approval</span>
             </div>
-            <Button
-              onClick={onApprovePlan}
-              className="bg-[#B388FF] hover:bg-[#B388FF]/90 text-[#03080a] text-sm"
-            >
-              <ThumbsUp className="w-4 h-4 mr-2" />
-              Approve Plan
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                onClick={onApprovePlan}
+                className="h-8 bg-[#B388FF] hover:bg-[#B388FF]/90 text-[#03080a] text-xs rounded-lg px-3"
+              >
+                <ThumbsUp className="w-3.5 h-3.5 mr-1.5" />
+                Approve Plan
+              </Button>
+            </div>
           </div>
         </motion.div>
       )}
 
-      {/* Message Input */}
-      {!needsApproval && (
+      {/* Message Input — always visible */}
+      {(isActive || session?.state === 'COMPLETED' || session?.state === 'FAILED' || !session) && (
         <div className="glass-nav px-4 py-3">
           <div className="flex items-end gap-2 max-w-3xl mx-auto">
             <Textarea
-              placeholder="Send a message to the agent..."
+              placeholder={needsApproval ? "Suggest changes to the plan, add or remove instructions..." : "Send a message to the agent..."}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={handleKeyDown}
