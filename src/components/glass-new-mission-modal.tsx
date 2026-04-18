@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, Rocket, Search, ChevronDown, Globe, Server,
   Github, Loader2, Lock,
@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Dialog,
@@ -57,9 +58,23 @@ export default function GlassNewMissionModal({
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
   const [isLoadingBranches, setIsLoadingBranches] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState('');
   const [repoSearch, setRepoSearch] = useState('');
   const [showRepoDropdown, setShowRepoDropdown] = useState(false);
   const [showAllBranches, setShowAllBranches] = useState(false);
+  const repoDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close repo dropdown on outside click
+  useEffect(() => {
+    if (!showRepoDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
+        setShowRepoDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showRepoDropdown]);
 
   // Load GitHub repos when modal opens
   const loadRepos = useCallback(async () => {
@@ -110,6 +125,7 @@ export default function GlassNewMissionModal({
   const handleLaunch = async () => {
     if (!objective.trim()) return;
     setIsLaunching(true);
+    setLaunchError('');
     try {
       let prompt = objective.trim();
 
@@ -141,6 +157,7 @@ export default function GlassNewMissionModal({
       handleClose();
     } catch (err) {
       console.error('Failed to create session:', err);
+      setLaunchError(err instanceof Error ? err.message : 'Failed to create session. Please try again.');
     } finally {
       setIsLaunching(false);
     }
@@ -156,6 +173,7 @@ export default function GlassNewMissionModal({
     setRepoSearch('');
     setShowRepoDropdown(false);
     setShowAllBranches(false);
+    setLaunchError('');
     onClose();
   };
 
@@ -166,15 +184,20 @@ export default function GlassNewMissionModal({
   );
 
   // Combine sources (connected) and GitHub repos
-  const sourceRepos = sources.map((s) => ({
-    name: s.repository?.name || s.name || '',
-    full_name: s.repository?.uri?.replace('https://github.com/', '') || '',
-    description: '',
-    private: false,
-    html_url: s.repository?.uri || '',
-    default_branch: s.repository?.defaultBranch || '',
-    owner: { login: '' },
-  }));
+  const sourceRepos = sources
+    .filter((s) => {
+      const uri = s.repository?.uri?.replace('https://github.com/', '') || '';
+      return !!uri; // Only include sources with a valid GitHub URI
+    })
+    .map((s) => ({
+      name: s.repository?.name || s.name || '',
+      full_name: s.repository?.uri?.replace('https://github.com/', '') || '',
+      description: '',
+      private: false,
+      html_url: s.repository?.uri || '',
+      default_branch: s.repository?.defaultBranch || '',
+      owner: { login: '' },
+    }));
 
   const visibleBranches = showAllBranches ? branches : branches.slice(0, 5);
 
@@ -228,7 +251,7 @@ export default function GlassNewMissionModal({
               </div>
 
               {/* Context Target */}
-              <div className="relative">
+              <div className="relative" ref={repoDropdownRef}>
                 <Label className="text-xs text-[#547B88] mb-1.5 block">Context Target *</Label>
                 <button
                   type="button"
@@ -415,6 +438,9 @@ export default function GlassNewMissionModal({
 
           {/* Footer */}
           <div className="px-5 py-3 border-t border-[#00E5FF]/10">
+            {launchError && (
+              <p className="text-[10px] text-[#FF2A5F] mb-2 px-1">{launchError}</p>
+            )}
             <Button
               onClick={handleLaunch}
               disabled={!objective.trim() || isLaunching}

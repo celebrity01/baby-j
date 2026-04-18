@@ -27,7 +27,7 @@ interface GlassThreadsViewProps {
   onNewMission: () => void;
   onOpenDeploy: () => void;
   onRefresh: () => void;
-  githubToken: string | null;
+  onOpenAddRepo?: () => void;
 }
 
 function getStateBadge(state?: string) {
@@ -56,7 +56,7 @@ export default function GlassThreadsView({
   onNewMission,
   onOpenDeploy,
   onRefresh,
-  githubToken,
+  onOpenAddRepo,
 }: GlassThreadsViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -118,6 +118,15 @@ export default function GlassThreadsView({
                 <Globe className="w-4 h-4 mr-2 text-[#00E5FF]" />
                 Deploy
               </DropdownMenuItem>
+              {onOpenAddRepo && (
+                <DropdownMenuItem
+                  onClick={onOpenAddRepo}
+                  className="hover:bg-[#00E5FF]/10 focus:bg-[#00E5FF]/10 cursor-pointer"
+                >
+                  <FolderGit2 className="w-4 h-4 mr-2 text-[#B388FF]" />
+                  Add Repository
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

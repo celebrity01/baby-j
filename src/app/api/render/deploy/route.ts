@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,7 +32,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Render returns the deploy object — the service URL comes from the service itself
-    // For the trigger deploy endpoint, the URL needs to be fetched from the service details
     const url = data?.deploy?.liveUrl || data?.liveUrl;
 
     return NextResponse.json({
@@ -43,6 +39,7 @@ export async function POST(req: NextRequest) {
       url,
     });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Render deploy error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

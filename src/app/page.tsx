@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  MessageSquare, Bot, Cpu, Bell,
+  MessageSquare, Bot, Cpu, Bell, FolderGit2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ApiKeySetup from '@/components/api-key-setup';
@@ -160,7 +160,7 @@ export default function Home() {
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
-      if (!apiKey) return;
+      if (!apiKey || !sessionId) return;
       setView('chat');
       setIsLoadingActivities(true);
       try {
@@ -182,29 +182,43 @@ export default function Home() {
   const handleSendMessage = useCallback(
     async (message: string) => {
       if (!apiKey || !selectedSession) return;
-      await sendMessage(apiKey, selectedSession.sessionId || '', message);
-      // Refresh activities
-      const acts = await getActivities(apiKey, selectedSession.sessionId || '');
-      setActivities(acts);
+      try {
+        await sendMessage(apiKey, selectedSession.sessionId || '', message);
+      } catch {
+        // Message send failed — still try to refresh activities
+      }
+      try {
+        const acts = await getActivities(apiKey, selectedSession.sessionId || '');
+        setActivities(acts);
+      } catch {
+        // silently fail
+      }
     },
     [apiKey, selectedSession]
   );
 
   const handleApprovePlan = useCallback(async () => {
     if (!apiKey || !selectedSession) return;
-    await approvePlan(apiKey, selectedSession.sessionId || '');
-    // Refresh
-    const [sessionData, activitiesData] = await Promise.all([
-      getSession(apiKey, selectedSession.sessionId || ''),
-      getActivities(apiKey, selectedSession.sessionId || ''),
-    ]);
-    setSelectedSession(sessionData);
-    setActivities(activitiesData);
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.sessionId === sessionData.sessionId ? sessionData : s
-      )
-    );
+    try {
+      await approvePlan(apiKey, selectedSession.sessionId || '');
+    } catch {
+      // Approve failed — still try to refresh
+    }
+    try {
+      const [sessionData, activitiesData] = await Promise.all([
+        getSession(apiKey, selectedSession.sessionId || ''),
+        getActivities(apiKey, selectedSession.sessionId || ''),
+      ]);
+      setSelectedSession(sessionData);
+      setActivities(activitiesData);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.sessionId === sessionData.sessionId ? sessionData : s
+        )
+      );
+    } catch {
+      // silently fail
+    }
   }, [apiKey, selectedSession]);
 
   const handleGitHubConnect = useCallback(
@@ -288,7 +302,7 @@ export default function Home() {
                   onNewMission={() => setIsNewMissionOpen(true)}
                   onOpenDeploy={() => setIsDeployOpen(true)}
                   onRefresh={refreshData}
-                  githubToken={githubToken}
+                  onOpenAddRepo={() => setIsAddRepoOpen(true)}
                 />
               )}
               {view === 'agents' && (
@@ -356,6 +370,9 @@ export default function Home() {
         githubToken={githubToken}
         isOpen={isAddRepoOpen}
         onClose={() => setIsAddRepoOpen(false)}
+        onRepoConnected={() => {
+          if (apiKey) loadData(apiKey);
+        }}
       />
       <GlassDeployNotification
         githubToken={githubToken}

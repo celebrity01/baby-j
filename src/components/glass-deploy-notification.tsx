@@ -67,9 +67,9 @@ const providers: ProviderConfig[] = [
     name: 'GitHub Pages',
     icon: Globe,
     color: '#E0F7FA',
-    storageKey: 'github-pages-token',
+    storageKey: 'github-token', // Reuse the main GitHub token
     helpUrl: 'https://github.com/settings/tokens',
-    helpText: 'Uses your GitHub token. Make sure it has the repo scope.',
+    helpText: 'Uses your connected GitHub token. Make sure it has the repo scope.',
   },
 ];
 
@@ -204,11 +204,16 @@ export default function GlassDeployNotification({
           throw new Error(errData.error || `Failed to load GitHub Pages sites (${res.status})`);
         }
         const data = await res.json();
-        setHostItems((data || []).map((s: { html_url: string; repo_name: string }) => ({
-          id: s.repo_name || s.html_url,
-          name: s.repo_name || s.html_url,
-          url: s.html_url,
-        })));
+        setHostItems((data || []).map((s: { html_url: string; repo_name: string; source?: { branch?: string } }) => {
+          // Extract owner/repo from html_url (e.g. "https://github.com/owner/repo")
+          const urlParts = (s.html_url || '').replace(/\/$/, '').split('/');
+          const repoSlug = urlParts.length >= 2 ? `${urlParts[urlParts.length - 2]}/${urlParts[urlParts.length - 1]}` : (s.repo_name || s.html_url);
+          return {
+            id: repoSlug,
+            name: s.repo_name || repoSlug,
+            url: s.html_url,
+          };
+        }));
       }
 
       // Load GitHub repos for GitHub Pages and other providers
@@ -281,9 +286,10 @@ export default function GlassDeployNotification({
       return { success: true, url };
     } else if (provider.id === 'render') {
       const data = await deployRender(token, { serviceId: itemId }) as Record<string, unknown>;
-      // For Render, the deploy endpoint might not return the service URL directly
-      // Use the saved host item URL as fallback
-      const url = (data.url as string) || selectedHostItemName || '';
+      // For Render, the deploy endpoint may not return the service URL directly
+      // Find the saved host item URL as fallback
+      const savedItem = hostItems.find(h => h.id === itemId);
+      const url = (data.url as string) || savedItem?.url || '';
       return { success: true, url };
     } else if (provider.id === 'github-pages') {
       const [owner, repo] = itemId.split('/');
@@ -355,7 +361,8 @@ export default function GlassDeployNotification({
     return { success: false, error: 'Unsupported provider' };
   };
 
-  const currentProvider = providers.find((p) => p.id === selectedProvider?.id) || selectedProvider;
+  // currentProvider is always selectedProvider since it was set from the providers list
+  const currentProvider = selectedProvider;
 
   // Determine if deploy button should be enabled
   const canDeploy = (itemTab === 'host' && selectedHostItem) || (itemTab === 'github' && selectedRepo && selectedBranch);

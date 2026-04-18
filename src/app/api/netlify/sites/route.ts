@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -35,6 +32,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(sites);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Netlify sites list error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

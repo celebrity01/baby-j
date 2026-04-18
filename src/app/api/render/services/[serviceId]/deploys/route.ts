@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 const RENDER_BASE = "https://api.render.com/v1";
 
@@ -16,7 +13,7 @@ export async function GET(
     if (!token) {
       return NextResponse.json({ error: "Missing X-Render-Api-Key header" }, { status: 401 });
     }
-    const res = await fetch(`${RENDER_BASE}/services/${serviceId}/deploys?limit=20`, {
+    const res = await fetch(`${RENDER_BASE}/services/${encodeURIComponent(serviceId)}/deploys?limit=20`, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
@@ -24,9 +21,14 @@ export async function GET(
       cache: "no-store",
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Render service deploys list error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -41,7 +43,7 @@ export async function POST(
       return NextResponse.json({ error: "Missing X-Render-Api-Key header" }, { status: 401 });
     }
     const body = await req.json();
-    const res = await fetch(`${RENDER_BASE}/services/${serviceId}/deploys`, {
+    const res = await fetch(`${RENDER_BASE}/services/${encodeURIComponent(serviceId)}/deploys`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -51,8 +53,13 @@ export async function POST(
       body: JSON.stringify(body || { clearCache: "dont_clear" }),
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!res.ok) {
+      const message = data?.message || data?.error || "Upstream request failed";
+      return NextResponse.json({ error: String(message) }, { status: res.status });
+    }
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Render service deploy trigger error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

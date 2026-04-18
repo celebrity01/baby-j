@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sanitizeHeaderValue(value: string): string {
-  return value.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
-}
+import { sanitizeHeaderValue } from "@/lib/api-utils";
 
 export async function POST(req: NextRequest) {
   try {
@@ -41,7 +38,6 @@ export async function POST(req: NextRequest) {
 
     if (deployments.length === 0) {
       // No production deployment exists yet — try to trigger a deployment via the project deploy hook
-      // Fall back to creating a deployment using the project's git source
       const projectRes = await fetch(
         `https://api.vercel.com/v9/projects/${encodeURIComponent(projectId)}`,
         {
@@ -136,10 +132,10 @@ export async function POST(req: NextRequest) {
     // Return the deployment data with the URL
     return NextResponse.json({
       ...deployData,
-      // Vercel returns the URL in `alias` array or `url` field
       url: deployData.alias?.[0] || deployData.url || latest.url,
     });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.error("Vercel deploy error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

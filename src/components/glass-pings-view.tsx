@@ -98,8 +98,11 @@ export default function GlassPingsView({ sessions }: GlassPingsViewProps) {
         };
       })
       .sort(
-        (a, b) =>
-          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        (a, b) => {
+          const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return timeB - timeA;
+        }
       );
   }, [sessions]);
 

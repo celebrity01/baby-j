@@ -464,7 +464,7 @@ export default function GlassChatView({
         ) : (
           activities.map((activity, index) => (
             <ActivityBubble
-              key={`activity-${index}`}
+              key={`${activity.type}-${activity.timestamp || ''}-${index}`}
               activity={activity}
               onApprove={needsApproval ? onApprovePlan : undefined}
             />

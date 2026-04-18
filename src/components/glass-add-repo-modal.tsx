@@ -23,12 +23,14 @@ interface GlassAddRepoModalProps {
   githubToken: string | null;
   isOpen: boolean;
   onClose: () => void;
+  onRepoConnected?: (url: string) => void;
 }
 
 export default function GlassAddRepoModal({
   githubToken,
   isOpen,
   onClose,
+  onRepoConnected,
 }: GlassAddRepoModalProps) {
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -288,8 +290,8 @@ export default function GlassAddRepoModal({
                 <Button
                   disabled={!connectUrl.trim()}
                   onClick={() => {
-                    // Store the connected URL and notify the parent
                     localStorage.setItem('jules-connected-repo', connectUrl.trim());
+                    onRepoConnected?.(connectUrl.trim());
                     handleClose();
                   }}
                   className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] font-semibold text-sm rounded-xl"
