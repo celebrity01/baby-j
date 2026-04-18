@@ -628,8 +628,8 @@ export default function GlassDeployNotification({
                     else setStep('select-item');
                   }
                   else if (step === 'select-item') {
-                    if (savedToken) setStep('api-key');
-                    else setStep('select-provider');
+                    if (savedToken) setStep('select-provider');
+                    else setStep('api-key');
                   }
                   else setStep('select-provider');
                 }}

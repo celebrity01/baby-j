@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
         if (!renderApiKey) {
           return NextResponse.json({ error: "Missing renderApiKey" }, { status: 400 });
         }
+        if (!params?.serviceId) {
+          return NextResponse.json({ error: "Missing serviceId" }, { status: 400 });
+        }
         const res = await fetch(
           `https://api.render.com/v1/services/${params.serviceId}/deploys`,
           {
@@ -40,6 +43,9 @@ export async function POST(req: NextRequest) {
         if (!renderApiKey) {
           return NextResponse.json({ error: "Missing renderApiKey" }, { status: 400 });
         }
+        if (!params?.serviceId) {
+          return NextResponse.json({ error: "Missing serviceId" }, { status: 400 });
+        }
         const res = await fetch(
           `https://api.render.com/v1/services/${params.serviceId}`,
           {
@@ -53,6 +59,9 @@ export async function POST(req: NextRequest) {
         const renderApiKey = sanitizeHeaderValue(params?.renderApiKey || "");
         if (!renderApiKey) {
           return NextResponse.json({ error: "Missing renderApiKey" }, { status: 400 });
+        }
+        if (!params?.serviceId) {
+          return NextResponse.json({ error: "Missing serviceId" }, { status: 400 });
         }
         const res = await fetch(
           `https://api.render.com/v1/services/${params.serviceId}/deploys`,

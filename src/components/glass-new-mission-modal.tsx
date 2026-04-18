@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   X, Rocket, Search, ChevronDown, Globe, Server,
-  FileCode, Github, BookOpen, Loader2,
+  Github, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,13 +12,6 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -102,7 +95,7 @@ export default function GlassNewMissionModal({
         if (githubToken) {
           const b = await listBranches(githubToken, owner, repo);
           setBranches(b);
-          const defaultBranch = b.find((br) => br.name === repo);
+          const defaultBranch = b.find((br) => br.default) || b[0];
           if (defaultBranch) setSelectedBranch(defaultBranch.name);
           else if (b.length > 0) setSelectedBranch(b[0].name);
         }
@@ -131,7 +124,7 @@ export default function GlassNewMissionModal({
 
       const params: Parameters<typeof createSession>[1] = {
         prompt,
-        executionMode: mode,
+        executionMode: requireApproval ? 'MANUAL' : 'AUTO_PR',
       };
 
       if (title.trim()) {
@@ -144,6 +137,11 @@ export default function GlassNewMissionModal({
           sourceName: `${owner}/${repo}`,
           branch: selectedBranch || undefined,
         };
+      }
+
+      // Set automation mode based on approval toggle
+      if (!requireApproval) {
+        params.executionMode = 'AUTO_PR';
       }
 
       const session = await createSession(apiKey, params);

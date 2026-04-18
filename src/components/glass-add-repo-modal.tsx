@@ -287,7 +287,11 @@ export default function GlassAddRepoModal({
                 </div>
                 <Button
                   disabled={!connectUrl.trim()}
-                  onClick={handleClose}
+                  onClick={() => {
+                    // Store the connected URL and notify the parent
+                    localStorage.setItem('jules-connected-repo', connectUrl.trim());
+                    handleClose();
+                  }}
                   className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] font-semibold text-sm rounded-xl"
                 >
                   <Globe className="w-4 h-4 mr-2" />

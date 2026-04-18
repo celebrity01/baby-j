@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import {
-  Github, Zap, LogOut, Loader2, ExternalLink, CheckCircle2, Shield,
+  Github, Zap, LogOut, Loader2, CheckCircle2, Shield,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

@@ -75,7 +75,7 @@ export default function GlassThreadsView({
     (s) => s.state === 'RUNNING' || s.state === 'AWAITING'
   ).length;
 
-  const repoCount = sources.length + (githubToken ? 0 : 0);
+  const repoCount = sources.length;
 
   return (
     <motion.div

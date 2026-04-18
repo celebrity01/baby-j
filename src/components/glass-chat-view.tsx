@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ArrowLeft, Bot, User, ThumbsUp, ExternalLink,
-  GitPullRequest, Plus, MoreVertical, Send, ChevronDown,
+  GitPullRequest, MoreVertical, Send, ChevronDown,
   ChevronUp, Loader2, Sparkles, Terminal, FileCode, Globe,
   CheckCircle2, XCircle,
 } from 'lucide-react';
@@ -17,7 +17,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { JulesSession, JulesActivity } from '@/lib/jules-client';
 
