@@ -250,7 +250,10 @@ export async function deployPages(
     },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error(`Failed to deploy Pages: ${res.status}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || errData.message || `Failed to deploy to GitHub Pages (${res.status})`);
+  }
   return res.json();
 }
 

@@ -108,7 +108,7 @@ export default function GlassDeployNotification({
   const [selectedHostItem, setSelectedHostItem] = useState('');
   const [selectedHostItemName, setSelectedHostItemName] = useState('');
   const [isDeploying, setIsDeploying] = useState(false);
-  const [deployResult, setDeployResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
+  const [deployResult, setDeployResult] = useState<{ success: boolean; url?: string; error?: string; message?: string } | null>(null);
   const [itemTab, setItemTab] = useState<'host' | 'github'>('host');
   const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [loadItemsError, setLoadItemsError] = useState('');
@@ -300,7 +300,7 @@ export default function GlassDeployNotification({
     } else if (provider.id === 'github-pages') {
       const [owner, repo] = itemId.split('/');
       const data = await deployPages(token, { owner, repo, branch: selectedBranch }) as Record<string, unknown>;
-      const url = `https://${owner}.github.io/${repo}/`;
+      const url = (data.url as string) || `https://${owner}.github.io/${repo}/`;
       return { success: true, url };
     } else {
       return { success: false, error: 'Redeploy not supported for this provider' };
@@ -344,8 +344,9 @@ export default function GlassDeployNotification({
       return { success: true, url };
     } else if (provider.id === 'github-pages') {
       const data = await deployPages(token, { owner, repo, branch }) as Record<string, unknown>;
-      const url = `https://${owner}.github.io/${repo}/`;
-      return { success: true, url };
+      const url = (data.url as string) || `https://${owner}.github.io/${repo}/`;
+      const message = data.message as string | undefined;
+      return { success: !!data.success, url, error: message ? undefined : `GitHub Pages: ${JSON.stringify(data)}` };
     }
 
     return { success: false, error: 'Unsupported provider' };
