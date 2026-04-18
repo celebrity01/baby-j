@@ -699,6 +699,9 @@ export default function GlassDeployNotification({
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         )}
+                        {deployResult.message && (
+                          <p className="text-[10px] text-[#547B88] mt-1.5 max-w-[280px] mx-auto leading-relaxed">{deployResult.message}</p>
+                        )}
                       </div>
                     </>
                   ) : (
