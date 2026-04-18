@@ -231,15 +231,21 @@ export default function GlassDeployNotification({
   const handleSelectRepo = async (fullName: string) => {
     setSelectedRepo(fullName);
     setSelectedBranch('');
-    if (!githubToken) return;
+    setSelectedHostItem('');
+    setSelectedHostItemName('');
+    if (!githubToken) {
+      setLoadItemsError('GitHub token required to load branches. Connect GitHub in settings first.');
+      return;
+    }
     try {
       const [owner, repo] = fullName.split('/');
       const b = await listBranches(githubToken, owner, repo);
       setBranches(b.map((br) => ({ name: br.name, default: br.default })));
       const def = b.find((br) => br.default) || b[0];
       if (def) setSelectedBranch(def.name);
+      setStep('select-branch');
     } catch {
-      // silently fail
+      setLoadItemsError('Failed to load branches. Check your GitHub token and try again.');
     }
   };
 
