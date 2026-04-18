@@ -13,16 +13,33 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { siteId } = body;
 
-    const res = await fetch(`https://api.netlify.com/api/v1/sites/${siteId}/builds`, {
+    if (!siteId) {
+      return NextResponse.json({ error: "Missing siteId in request body" }, { status: 400 });
+    }
+
+    const res = await fetch(`https://api.netlify.com/api/v1/sites/${encodeURIComponent(siteId)}/builds`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ title: "Deployed from Jules Lite" }),
+      body: JSON.stringify({ title: "Deployed from Jules Super Agent" }),
     });
+
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    if (!res.ok) {
+      const message = data?.message || `Netlify deploy failed: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
+    // Netlify returns the site URL in `ssl_url`, `url`, or `deploy_ssl_url`
+    const url = data.ssl_url || data.url || data.deploy_ssl_url;
+
+    return NextResponse.json({
+      ...data,
+      url,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

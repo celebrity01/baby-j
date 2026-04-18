@@ -16,8 +16,23 @@ export async function GET(req: NextRequest) {
       },
       cache: "no-store",
     });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const message = errData?.error?.message || errData?.error || `Failed to list Vercel projects: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
     const data = await res.json();
-    return NextResponse.json(data.projects || [], { status: res.status });
+
+    // Normalize the response to a consistent format
+    const projects = (data.projects || []).map((p: Record<string, unknown>) => ({
+      id: p.id,
+      name: p.name,
+      url: p.alias?.[0] || p.targets?.production?.url || `https://${p.name}-vercel.app`,
+    }));
+
+    return NextResponse.json(projects);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

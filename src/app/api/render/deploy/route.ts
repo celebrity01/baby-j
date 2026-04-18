@@ -13,7 +13,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { serviceId } = body;
 
-    const res = await fetch(`https://api.render.com/v1/services/${serviceId}/deploys`, {
+    if (!serviceId) {
+      return NextResponse.json({ error: "Missing serviceId in request body" }, { status: 400 });
+    }
+
+    const res = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/deploys`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -22,8 +26,22 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({ clearCache: "dont_clear" }),
     });
+
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    if (!res.ok) {
+      const message = data?.message || data?.error || `Render deploy failed: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
+    // Render returns the deploy object — the service URL comes from the service itself
+    // For the trigger deploy endpoint, the URL needs to be fetched from the service details
+    const url = data?.deploy?.liveUrl || data?.liveUrl;
+
+    return NextResponse.json({
+      ...data,
+      url,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

@@ -16,8 +16,24 @@ export async function GET(req: NextRequest) {
       },
       cache: "no-store",
     });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const message = errData?.message || `Failed to list Netlify sites: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    // Normalize the response to a consistent format
+    const sites = (Array.isArray(data) ? data : []).map((s: Record<string, unknown>) => ({
+      id: s.id,
+      name: s.name || s.id,
+      url: s.ssl_url || s.url || s.deploy_ssl_url,
+      state: s.state,
+    }));
+
+    return NextResponse.json(sites);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

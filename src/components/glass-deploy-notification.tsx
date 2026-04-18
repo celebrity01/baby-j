@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   X, Globe, Server, CheckCircle2, Loader2, ArrowRight,
-  ChevronRight, ExternalLink, Key,
+  ChevronRight, ExternalLink, Key, AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -74,6 +74,24 @@ const providers: ProviderConfig[] = [
   },
 ];
 
+/** Extract a human-readable error message from API responses */
+function extractErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const obj = err as Record<string, unknown>;
+    // Common API error patterns
+    if (obj.error && typeof obj.error === 'string') return obj.error;
+    if (obj.error && typeof obj.error === 'object') {
+      const e = obj.error as Record<string, unknown>;
+      return (e.message as string) || (e.code as string) || JSON.stringify(e);
+    }
+    if (obj.message && typeof obj.message === 'string') return obj.message;
+    return JSON.stringify(obj);
+  }
+  return fallback;
+}
+
 export default function GlassDeployNotification({
   githubToken,
   isOpen,
@@ -87,11 +105,14 @@ export default function GlassDeployNotification({
   const [branches, setBranches] = useState<{ name: string; default?: boolean }[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [selectedBranch, setSelectedBranch] = useState('');
-  const [hostItems, setHostItems] = useState<{ id: string; name: string }[]>([]);
+  const [hostItems, setHostItems] = useState<{ id: string; name: string; url?: string }[]>([]);
   const [selectedHostItem, setSelectedHostItem] = useState('');
+  const [selectedHostItemName, setSelectedHostItemName] = useState('');
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
   const [itemTab, setItemTab] = useState<'host' | 'github'>('host');
+  const [isLoadingItems, setIsLoadingItems] = useState(false);
+  const [loadItemsError, setLoadItemsError] = useState('');
 
   const reset = useCallback(() => {
     setStep('select-provider');
@@ -104,9 +125,12 @@ export default function GlassDeployNotification({
     setSelectedBranch('');
     setHostItems([]);
     setSelectedHostItem('');
+    setSelectedHostItemName('');
     setIsDeploying(false);
     setDeployResult(null);
     setItemTab('host');
+    setIsLoadingItems(false);
+    setLoadItemsError('');
   }, []);
 
   const handleClose = () => {
@@ -126,45 +150,65 @@ export default function GlassDeployNotification({
     }
   };
 
-  const handleSaveToken = () => {
+  const handleSaveToken = async () => {
     if (!tokenInput.trim() || !selectedProvider) return;
     localStorage.setItem(selectedProvider.storageKey, tokenInput.trim());
     setSavedToken(tokenInput.trim());
     setStep('select-item');
-    loadItems(selectedProvider, tokenInput.trim());
+    await loadItems(selectedProvider, tokenInput.trim());
   };
 
   const loadItems = async (provider: ProviderConfig, token: string) => {
+    setIsLoadingItems(true);
+    setLoadItemsError('');
     try {
       if (provider.id === 'vercel') {
         const res = await fetch('/api/vercel/projects', {
           headers: { 'X-Vercel-Token': token },
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Failed to load Vercel projects (${res.status})`);
+        }
         const data = await res.json();
-        setHostItems((data || []).map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+        setHostItems((data || []).map((p: { id: string; name: string; url?: string }) => ({ id: p.id, name: p.name, url: p.url })));
       } else if (provider.id === 'netlify') {
         const res = await fetch('/api/netlify/sites', {
           headers: { 'X-Netlify-Token': token },
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Failed to load Netlify sites (${res.status})`);
+        }
         const data = await res.json();
-        setHostItems((data || []).map((s: { id: string; name: string }) => ({ id: s.id, name: s.name })));
+        setHostItems((data || []).map((s: { id: string; name: string; url?: string }) => ({ id: s.id, name: s.name, url: s.url })));
       } else if (provider.id === 'render') {
         const res = await fetch('/api/render/services', {
           headers: { 'X-Render-Api-Key': token },
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Failed to load Render services (${res.status})`);
+        }
         const data = await res.json();
-        setHostItems((data || []).map((s: { id: string; serviceDetails?: { name: string }; name?: string }) => ({
+        setHostItems((data || []).map((s: { id: string; name: string; url?: string }) => ({
           id: s.id,
-          name: s.serviceDetails?.name || s.name || s.id,
+          name: s.name || s.id,
+          url: s.url,
         })));
       } else if (provider.id === 'github-pages') {
         const res = await fetch('/api/github-pages/sites', {
           headers: { 'X-GitHub-Token': token },
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Failed to load GitHub Pages sites (${res.status})`);
+        }
         const data = await res.json();
         setHostItems((data || []).map((s: { html_url: string; repo_name: string }) => ({
           id: s.repo_name || s.html_url,
           name: s.repo_name || s.html_url,
+          url: s.html_url,
         })));
       }
 
@@ -173,8 +217,10 @@ export default function GlassDeployNotification({
         const ghRepos = await listGitHubRepos(githubToken);
         setRepos(ghRepos);
       }
-    } catch {
-      // silently fail
+    } catch (err) {
+      setLoadItemsError(extractErrorMessage(err, 'Failed to load items. Check your token and try again.'));
+    } finally {
+      setIsLoadingItems(false);
     }
   };
 
@@ -202,19 +248,22 @@ export default function GlassDeployNotification({
       let result: { success: boolean; url?: string; error?: string };
 
       if (selectedHostItem && itemTab === 'host') {
-        // Redeploy existing
+        // Redeploy existing project
         result = await triggerRedeploy(selectedProvider, savedToken, selectedHostItem);
       } else if (selectedRepo && selectedBranch) {
         // Create and deploy from GitHub repo
         result = await deployFromRepo(selectedProvider, savedToken, selectedRepo, selectedBranch);
       } else {
-        result = { success: false, error: 'No target selected' };
+        result = { success: false, error: 'No deployment target selected. Select a project or GitHub repo.' };
       }
 
       setDeployResult(result);
       setStep('result');
     } catch (err) {
-      setDeployResult({ success: false, error: String(err) });
+      setDeployResult({
+        success: false,
+        error: extractErrorMessage(err, 'Deployment failed with an unknown error. Please check your credentials and try again.'),
+      });
       setStep('result');
     } finally {
       setIsDeploying(false);
@@ -223,14 +272,25 @@ export default function GlassDeployNotification({
 
   const triggerRedeploy = async (provider: ProviderConfig, token: string, itemId: string) => {
     if (provider.id === 'vercel') {
-      const data = await deployVercel(token, { projectId: itemId });
-      return { success: true, url: (data as { url?: string })?.url };
+      const data = await deployVercel(token, { projectId: itemId }) as Record<string, unknown>;
+      // Vercel returns url from our fixed route
+      const url = (data.url as string) || (data.alias as string[])?.[0] || '';
+      return { success: true, url };
     } else if (provider.id === 'netlify') {
-      const data = await deployNetlify(token, { siteId: itemId });
-      return { success: true, url: (data as { ssl_url?: string })?.ssl_url };
+      const data = await deployNetlify(token, { siteId: itemId }) as Record<string, unknown>;
+      const url = (data.url as string) || (data.ssl_url as string) || '';
+      return { success: true, url };
     } else if (provider.id === 'render') {
-      const data = await deployRender(token, { serviceId: itemId });
-      return { success: true, url: (data as { deploy?: { liveUrl?: string } })?.deploy?.liveUrl };
+      const data = await deployRender(token, { serviceId: itemId }) as Record<string, unknown>;
+      // For Render, the deploy endpoint might not return the service URL directly
+      // Use the saved host item URL as fallback
+      const url = (data.url as string) || selectedHostItemName || '';
+      return { success: true, url };
+    } else if (provider.id === 'github-pages') {
+      const [owner, repo] = itemId.split('/');
+      const data = await deployPages(token, { owner, repo }) as Record<string, unknown>;
+      const url = `https://${owner}.github.io/${repo}/`;
+      return { success: true, url };
     } else {
       return { success: false, error: 'Redeploy not supported for this provider' };
     }
@@ -250,15 +310,17 @@ export default function GlassDeployNotification({
         repoOwner: owner,
         repoName: repo,
         branch,
-      });
-      return { success: true, url: (data as { url?: string })?.url };
+      }) as Record<string, unknown>;
+      const url = (data.url as string) || (data.alias as string[])?.[0] || `https://${repo}-vercel.app`;
+      return { success: true, url };
     } else if (provider.id === 'netlify') {
       const data = await createNetlifySite(token, {
         name: repo,
         repoUrl: `https://github.com/${owner}/${repo}`,
         branch,
-      });
-      return { success: true, url: (data as { ssl_url?: string })?.ssl_url };
+      }) as Record<string, unknown>;
+      const url = (data.url as string) || (data.ssl_url as string) || '';
+      return { success: true, url };
     } else if (provider.id === 'render') {
       const res = await fetch('/api/render/services', {
         method: 'POST',
@@ -278,17 +340,26 @@ export default function GlassDeployNotification({
           branch,
         }),
       });
-      const data = await res.json();
-      return { success: true, url: (data as { serviceDetails?: { url?: string } })?.serviceDetails?.url };
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || `Render service creation failed (${res.status})`);
+      }
+      const data = await res.json() as Record<string, unknown>;
+      const url = (data.url as string) || (data.serviceDetails as Record<string, string>)?.url || '';
+      return { success: true, url };
     } else if (provider.id === 'github-pages') {
-      const data = await deployPages(token, { owner, repo, branch });
-      return { success: true, url: `https://${owner}.github.io/${repo}/` };
+      const data = await deployPages(token, { owner, repo, branch }) as Record<string, unknown>;
+      const url = `https://${owner}.github.io/${repo}/`;
+      return { success: true, url };
     }
 
     return { success: false, error: 'Unsupported provider' };
   };
 
   const currentProvider = providers.find((p) => p.id === selectedProvider?.id) || selectedProvider;
+
+  // Determine if deploy button should be enabled
+  const canDeploy = (itemTab === 'host' && selectedHostItem) || (itemTab === 'github' && selectedRepo && selectedBranch);
 
   return (
     <Dialog open={isOpen} onOpenChange={() => handleClose()}>
@@ -432,12 +503,30 @@ export default function GlassDeployNotification({
                     </button>
                   </div>
 
-                  {itemTab === 'host' ? (
+                  {isLoadingItems ? (
+                    <div className="text-center py-12">
+                      <Loader2 className="w-5 h-5 text-[#00E5FF] animate-spin mx-auto mb-2" />
+                      <p className="text-xs text-[#547B88]">Loading projects...</p>
+                    </div>
+                  ) : loadItemsError ? (
+                    <div className="text-center py-8">
+                      <AlertTriangle className="w-5 h-5 text-[#FF2A5F] mx-auto mb-2" />
+                      <p className="text-xs text-[#FF2A5F]">{loadItemsError}</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => savedToken && loadItems(currentProvider, savedToken)}
+                        className="mt-2 text-[10px] text-[#00E5FF] hover:text-[#00E5FF]"
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  ) : itemTab === 'host' ? (
                     hostItems.length === 0 ? (
                       <div className="text-center py-8">
                         <p className="text-xs text-[#547B88]">No existing projects found</p>
                         <p className="text-[10px] text-[#547B88] mt-1">
-                          Try selecting a GitHub repo instead
+                          Switch to &quot;GitHub Repos&quot; to deploy a new project
                         </p>
                       </div>
                     ) : (
@@ -447,12 +536,19 @@ export default function GlassDeployNotification({
                             key={item.id}
                             onClick={() => {
                               setSelectedHostItem(item.id);
+                              setSelectedHostItemName(item.url || item.name);
                               setSelectedRepo('');
+                              setSelectedBranch('');
                               setStep('confirm');
                             }}
                             className="glass-card p-3 w-full text-left flex items-center justify-between hover:border-[#00E5FF]/20 transition-colors"
                           >
-                            <span className="text-xs text-[#E0F7FA] font-mono truncate">{item.name}</span>
+                            <div className="min-w-0">
+                              <span className="text-xs text-[#E0F7FA] font-mono truncate block">{item.name}</span>
+                              {item.url && (
+                                <span className="text-[10px] text-[#547B88] truncate block mt-0.5">{item.url}</span>
+                              )}
+                            </div>
                             <ChevronRight className="w-3.5 h-3.5 text-[#547B88] shrink-0" />
                           </button>
                         ))}
@@ -492,31 +588,38 @@ export default function GlassDeployNotification({
                   <p className="text-xs text-[#547B88]">
                     Select branch for <span className="text-[#E0F7FA] font-mono">{selectedRepo}</span>
                   </p>
-                  <div className="space-y-1.5">
-                    {branches.map((b) => (
-                      <button
-                        key={b.name}
-                        onClick={() => {
-                          setSelectedBranch(b.name);
-                          setSelectedHostItem('');
-                          setStep('confirm');
-                        }}
-                        className={`glass-card p-3 w-full text-left flex items-center justify-between transition-colors ${
-                          selectedBranch === b.name ? 'border-[#00E5FF]/30' : 'hover:border-[#00E5FF]/20'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-[#E0F7FA] font-mono">{b.name}</span>
-                          {b.default && (
-                            <Badge className="h-4 text-[8px] bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/30">
-                              default
-                            </Badge>
-                          )}
-                        </div>
-                        <ChevronRight className="w-3.5 h-3.5 text-[#547B88]" />
-                      </button>
-                    ))}
-                  </div>
+                  {branches.length === 0 ? (
+                    <div className="text-center py-8">
+                      <p className="text-xs text-[#547B88]">No branches found</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {branches.map((b) => (
+                        <button
+                          key={b.name}
+                          onClick={() => {
+                            setSelectedBranch(b.name);
+                            setSelectedHostItem('');
+                            setSelectedHostItemName('');
+                            setStep('confirm');
+                          }}
+                          className={`glass-card p-3 w-full text-left flex items-center justify-between transition-colors ${
+                            selectedBranch === b.name ? 'border-[#00E5FF]/30' : 'hover:border-[#00E5FF]/20'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-[#E0F7FA] font-mono">{b.name}</span>
+                            {b.default && (
+                              <Badge className="h-4 text-[8px] bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/30">
+                                default
+                              </Badge>
+                            )}
+                          </div>
+                          <ChevronRight className="w-3.5 h-3.5 text-[#547B88]" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -532,10 +635,10 @@ export default function GlassDeployNotification({
                         <span className="text-xs text-[#547B88]">Provider</span>
                         <span className="text-xs text-[#E0F7FA]">{currentProvider.name}</span>
                       </div>
-                      {selectedHostItem && (
+                      {itemTab === 'host' && selectedHostItem && (
                         <div className="flex justify-between">
                           <span className="text-xs text-[#547B88]">Project</span>
-                          <span className="text-xs text-[#E0F7FA] font-mono truncate max-w-[200px]">{selectedHostItem}</span>
+                          <span className="text-xs text-[#E0F7FA] font-mono truncate max-w-[200px]">{selectedHostItemName || selectedHostItem}</span>
                         </div>
                       )}
                       {selectedRepo && (
@@ -550,14 +653,21 @@ export default function GlassDeployNotification({
                           <span className="text-xs text-[#E0F7FA] font-mono">{selectedBranch}</span>
                         </div>
                       )}
+                      <div className="flex justify-between">
+                        <span className="text-xs text-[#547B88]">Action</span>
+                        <span className="text-xs text-[#E0F7FA]">
+                          {itemTab === 'host' ? 'Redeploy existing' : 'Create & deploy new'}
+                        </span>
+                      </div>
                     </div>
                   </div>
                   <Button
                     onClick={handleConfirm}
-                    className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] font-semibold text-sm rounded-xl"
+                    disabled={!canDeploy || isDeploying}
+                    className="w-full h-10 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-[#03080a] font-semibold text-sm rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Globe className="w-4 h-4 mr-2" />
-                    Deploy Now
+                    {itemTab === 'host' ? 'Redeploy Now' : 'Create & Deploy'}
                   </Button>
                 </div>
               )}
@@ -601,16 +711,34 @@ export default function GlassDeployNotification({
                       </div>
                       <div>
                         <h3 className="text-sm font-semibold text-[#FF2A5F]">Deployment Failed</h3>
-                        <p className="text-xs text-[#547B88] mt-1">{deployResult.error || 'Unknown error'}</p>
+                        <p className="text-xs text-[#547B88] mt-2 max-w-xs mx-auto leading-relaxed">{deployResult.error || 'Unknown error'}</p>
                       </div>
                     </>
                   )}
-                  <Button
-                    onClick={handleClose}
-                    className="h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl"
-                  >
-                    Close
-                  </Button>
+                  <div className="flex gap-2">
+                    {deployResult.success && (
+                      <Button
+                        onClick={handleClose}
+                        className="flex-1 h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl"
+                      >
+                        Done
+                      </Button>
+                    )}
+                    <Button
+                      onClick={() => {
+                        if (deployResult.success) {
+                          handleClose();
+                        } else {
+                          // Go back to confirm to retry
+                          setDeployResult(null);
+                          setStep('confirm');
+                        }
+                      }}
+                      className={`${deployResult.success ? 'flex-1' : 'w-full'} h-9 bg-white/5 hover:bg-white/10 text-[#E0F7FA] text-xs rounded-xl`}
+                    >
+                      {deployResult.success ? 'Deploy Another' : 'Go Back & Retry'}
+                    </Button>
+                  </div>
                 </div>
               )}
             </motion.div>

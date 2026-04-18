@@ -13,6 +13,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { name, repoOwner, repoName, branch } = body;
 
+    if (!name) {
+      return NextResponse.json({ error: "Missing project name" }, { status: 400 });
+    }
+
     const res = await fetch("https://api.vercel.com/v9/projects", {
       method: "POST",
       headers: {
@@ -31,8 +35,21 @@ export async function POST(req: NextRequest) {
           : undefined,
       }),
     });
+
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    if (!res.ok) {
+      const message = data?.error?.message || data?.error || `Failed to create project: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
+    // Vercel returns project URL in various formats — normalize it
+    const url = data.alias?.[0] || data.url || `https://${data.name}-vercel.app`;
+
+    return NextResponse.json({
+      ...data,
+      url,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

@@ -17,8 +17,25 @@ export async function GET(req: NextRequest) {
       },
       cache: "no-store",
     });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const message = errData?.message || errData?.error || `Failed to list Render services: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    // Normalize the response to a consistent format
+    const services = (Array.isArray(data) ? data : []).map((s: Record<string, unknown>) => ({
+      id: s.id,
+      name: s.serviceDetails?.name || s.name || s.id,
+      url: s.serviceDetails?.url || s.url,
+      type: s.type,
+      state: s.state,
+    }));
+
+    return NextResponse.json(services);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -42,7 +59,18 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+
+    if (!res.ok) {
+      const message = data?.message || data?.error || `Failed to create Render service: ${res.status}`;
+      return NextResponse.json({ error: message }, { status: res.status });
+    }
+
+    const url = data?.serviceDetails?.url || data?.url;
+
+    return NextResponse.json({
+      ...data,
+      url,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
