@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   X, Globe, Server, CheckCircle2, Loader2, ArrowRight,
   ChevronRight, ExternalLink, Key, AlertTriangle, Clock,
-  Zap, RefreshCw, FileCode,
+  Zap, FileCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
