@@ -2,119 +2,85 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  MessageSquare, Bot, Cpu, Bell, FolderGit2,
+  MessageSquare, Bot, Cpu, Bell, Rocket,
+  Zap, Plus, RefreshCw, MoreVertical, Globe, FolderGit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Button } from '@/components/ui/button';
 import ApiKeySetup from '@/components/api-key-setup';
 import GlassThreadsView from '@/components/glass-threads-view';
 import GlassChatView from '@/components/glass-chat-view';
 import GlassAgentsView from '@/components/glass-agents-view';
 import GlassMCPView from '@/components/glass-mcp-view';
 import GlassPingsView from '@/components/glass-pings-view';
+import GlassDeploymentCenter from '@/components/glass-deployment-center';
 import GlassNewMissionModal from '@/components/glass-new-mission-modal';
 import GlassAddRepoModal from '@/components/glass-add-repo-modal';
 import GlassDeployNotification from '@/components/glass-deploy-notification';
-import type {
-  JulesSource,
-  JulesSession,
-  JulesActivity,
-  GitHubUser,
-} from '@/lib/jules-client';
+
 import {
-  listSources,
-  listSessions,
-  getSession,
-  getActivities,
-  sendMessage,
-  approvePlan,
-  getGitHubUser,
+  listSources, listSessions, getSession, getActivities,
+  sendMessage, approvePlan, getGitHubUser
+} from '@/lib/jules-client';
+import type {
+  JulesSource, JulesSession, JulesActivity, GitHubUser
 } from '@/lib/jules-client';
 
-type AppView = 'threads' | 'chat' | 'agents' | 'mcp' | 'pings';
 type AppStep = 'api-key' | 'dashboard';
+type AppView = 'threads' | 'chat' | 'agents' | 'mcp' | 'pings' | 'deploy';
 
-const navTabs: { id: AppView; label: string; icon: typeof MessageSquare }[] = [
-  { id: 'threads', label: 'Threads', icon: MessageSquare },
-  { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'mcp', label: 'MCP', icon: Cpu },
-  { id: 'pings', label: 'Pings', icon: Bell },
+const navTabs = [
+  { id: 'threads' as AppView, label: 'Threads', icon: MessageSquare },
+  { id: 'deploy' as AppView, label: 'Deploy', icon: Rocket },
+  { id: 'agents' as AppView, label: 'Agents', icon: Bot },
+  { id: 'mcp' as AppView, label: 'MCP', icon: Cpu },
+  { id: 'pings' as AppView, label: 'Pings', icon: Bell },
 ];
 
 export default function Home() {
-  // Core state
   const [step, setStep] = useState<AppStep>('api-key');
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [githubToken, setGithubToken] = useState<string | null>(null);
 
-  // Data state
+  // Provider tokens
+  const [vercelToken, setVercelToken] = useState<string | null>(null);
+  const [netlifyToken, setNetlifyToken] = useState<string | null>(null);
+  const [renderToken, setRenderToken] = useState<string | null>(null);
+  const [cloudflareToken, setCloudflareToken] = useState<string | null>(null);
+
   const [sources, setSources] = useState<JulesSource[]>([]);
   const [sessions, setSessions] = useState<JulesSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<JulesSession | null>(null);
   const [activities, setActivities] = useState<JulesActivity[]>([]);
   const [githubUser, setGithubUser] = useState<GitHubUser | null>(null);
 
-  // Loading state
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [isLoadingActivities, setIsLoadingActivities] = useState(false);
 
-  // Navigation
   const [view, setView] = useState<AppView>('threads');
-
-  // Modals
   const [isNewMissionOpen, setIsNewMissionOpen] = useState(false);
   const [isAddRepoOpen, setIsAddRepoOpen] = useState(false);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
 
-  // Init - load tokens from localStorage
   useEffect(() => {
     const storedKey = localStorage.getItem('jules-api-key');
     const storedGhToken = localStorage.getItem('github-token');
+    setVercelToken(localStorage.getItem('vercel-token'));
+    setNetlifyToken(localStorage.getItem('netlify-token'));
+    setRenderToken(localStorage.getItem('render-api-key'));
+    setCloudflareToken(localStorage.getItem('cloudflare-token'));
 
     if (storedKey) {
       setApiKey(storedKey);
       setStep('dashboard');
       loadData(storedKey);
     }
-
     if (storedGhToken) {
       setGithubToken(storedGhToken);
       loadGitHubUser(storedGhToken);
     }
   }, []);
-
-  // Auto-refresh activities for active sessions
-  useEffect(() => {
-    if (view !== 'chat' || !selectedSession || !apiKey) return;
-
-    const isActive =
-      selectedSession.state === 'RUNNING' || selectedSession.state === 'AWAITING';
-    if (!isActive) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const [sessionData, activitiesData] = await Promise.all([
-          getSession(apiKey, selectedSession.sessionId || ''),
-          getActivities(apiKey, selectedSession.sessionId || ''),
-        ]);
-        setSelectedSession(sessionData);
-        setActivities(activitiesData);
-
-        // Update session in list too
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.sessionId === sessionData.sessionId ? sessionData : s
-          )
-        );
-      } catch {
-        // silently fail
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [view, selectedSession, apiKey]);
-
-  // ===== Data Loading =====
 
   const loadData = useCallback(async (key: string) => {
     setIsLoadingSources(true);
@@ -126,9 +92,7 @@ export default function Home() {
       ]);
       if (src.status === 'fulfilled') setSources(src.value);
       if (sess.status === 'fulfilled') setSessions(sess.value);
-    } catch {
-      // silently fail
-    } finally {
+    } catch {} finally {
       setIsLoadingSources(false);
       setIsLoadingSessions(false);
     }
@@ -138,140 +102,37 @@ export default function Home() {
     try {
       const user = await getGitHubUser(token);
       setGithubUser(user);
-    } catch {
-      // silently fail
-    }
+    } catch {}
   }, []);
 
-  const refreshData = useCallback(() => {
-    if (apiKey) loadData(apiKey);
-  }, [apiKey, loadData]);
+  const handleApiValidated = (key: string) => {
+    setApiKey(key);
+    setStep('dashboard');
+    loadData(key);
+  };
 
-  // ===== Event Handlers =====
-
-  const handleApiValidated = useCallback(
-    (key: string) => {
-      setApiKey(key);
-      setStep('dashboard');
-      loadData(key);
-    },
-    [loadData]
-  );
-
-  const handleSelectSession = useCallback(
-    async (sessionId: string) => {
-      if (!apiKey || !sessionId) return;
-      setView('chat');
-      setIsLoadingActivities(true);
-      try {
-        const [sessionData, activitiesData] = await Promise.all([
-          getSession(apiKey, sessionId),
-          getActivities(apiKey, sessionId),
-        ]);
-        setSelectedSession(sessionData);
-        setActivities(activitiesData);
-      } catch {
-        // silently fail
-      } finally {
-        setIsLoadingActivities(false);
-      }
-    },
-    [apiKey]
-  );
-
-  const handleSendMessage = useCallback(
-    async (message: string) => {
-      if (!apiKey || !selectedSession) return;
-      try {
-        await sendMessage(apiKey, selectedSession.sessionId || '', message);
-      } catch {
-        // Message send failed — still try to refresh activities
-      }
-      try {
-        const acts = await getActivities(apiKey, selectedSession.sessionId || '');
-        setActivities(acts);
-      } catch {
-        // silently fail
-      }
-    },
-    [apiKey, selectedSession]
-  );
-
-  const handleApprovePlan = useCallback(async () => {
-    if (!apiKey || !selectedSession) return;
-    try {
-      await approvePlan(apiKey, selectedSession.sessionId || '');
-    } catch {
-      // Approve failed — still try to refresh
-    }
+  const handleSelectSession = async (sessionId: string) => {
+    if (!apiKey || !sessionId) return;
+    setView('chat');
+    setIsLoadingActivities(true);
     try {
       const [sessionData, activitiesData] = await Promise.all([
-        getSession(apiKey, selectedSession.sessionId || ''),
-        getActivities(apiKey, selectedSession.sessionId || ''),
+        getSession(apiKey, sessionId),
+        getActivities(apiKey, sessionId),
       ]);
       setSelectedSession(sessionData);
       setActivities(activitiesData);
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.sessionId === sessionData.sessionId ? sessionData : s
-        )
-      );
-    } catch {
-      // silently fail
+    } catch {} finally {
+      setIsLoadingActivities(false);
     }
-  }, [apiKey, selectedSession]);
-
-  const handleGitHubConnect = useCallback(
-    (token: string) => {
-      setGithubToken(token);
-      loadGitHubUser(token);
-    },
-    [loadGitHubUser]
-  );
-
-  const handleGitHubDisconnect = useCallback(() => {
-    localStorage.removeItem('github-token');
-    setGithubToken(null);
-    setGithubUser(null);
-  }, []);
-
-  const handleJulesDisconnect = useCallback(() => {
-    localStorage.removeItem('jules-api-key');
-    setApiKey(null);
-    setStep('api-key');
-    setView('threads');
-    setSelectedSession(null);
-    setSources([]);
-    setSessions([]);
-  }, []);
-
-  const handleMissionCreated = useCallback(
-    (sessionId: string) => {
-      setIsNewMissionOpen(false);
-      if (apiKey) loadData(apiKey);
-      if (sessionId) {
-        setTimeout(() => handleSelectSession(sessionId), 500);
-      }
-    },
-    [apiKey, loadData, handleSelectSession]
-  );
-
-  const handleBack = useCallback(() => {
-    setView('threads');
-    setSelectedSession(null);
-    setActivities([]);
-    if (apiKey) loadData(apiKey);
-  }, [apiKey, loadData]);
-
-  // ===== Render =====
+  };
 
   if (step === 'api-key') {
     return <ApiKeySetup onApiValidated={handleApiValidated} />;
   }
 
   return (
-    <div className="min-h-screen flex flex-col max-w-3xl mx-auto">
-      {/* Main Content */}
+    <div className="min-h-screen flex flex-col max-w-3xl mx-auto bg-[#03080a] text-[#E0F7FA]">
       <div className="flex-1 relative">
         <AnimatePresence mode="wait">
           {view === 'chat' ? (
@@ -280,18 +141,27 @@ export default function Home() {
               session={selectedSession}
               activities={activities}
               isLoading={isLoadingActivities}
-              onSendMessage={handleSendMessage}
-              onApprovePlan={handleApprovePlan}
-              onBack={handleBack}
+              onSendMessage={async (msg) => {
+                if (apiKey && selectedSession) {
+                  await sendMessage(apiKey, selectedSession.sessionId!, msg);
+                  setActivities(await getActivities(apiKey, selectedSession.sessionId!));
+                }
+              }}
+              onApprovePlan={async () => {
+                if (apiKey && selectedSession) {
+                  await approvePlan(apiKey, selectedSession.sessionId!);
+                  const [s, a] = await Promise.all([
+                    getSession(apiKey, selectedSession.sessionId!),
+                    getActivities(apiKey, selectedSession.sessionId!)
+                  ]);
+                  setSelectedSession(s);
+                  setActivities(a);
+                }
+              }}
+              onBack={() => setView('threads')}
             />
           ) : (
-            <motion.div
-              key={view}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="h-[calc(100vh-64px)]"
-            >
+            <motion.div key={view} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full">
               {view === 'threads' && (
                 <GlassThreadsView
                   sessions={sessions}
@@ -300,56 +170,39 @@ export default function Home() {
                   isLoadingSources={isLoadingSources}
                   onSelectSession={handleSelectSession}
                   onNewMission={() => setIsNewMissionOpen(true)}
-                  onOpenDeploy={() => setIsDeployOpen(true)}
-                  onRefresh={refreshData}
+                  onOpenDeploy={() => setView('deploy')}
+                  onRefresh={() => apiKey && loadData(apiKey)}
                   onOpenAddRepo={() => setIsAddRepoOpen(true)}
                 />
               )}
-              {view === 'agents' && (
-                <GlassAgentsView
+              {view === 'deploy' && (
+                <GlassDeploymentCenter
                   githubToken={githubToken}
-                  julesApiKey={apiKey}
-                  githubUser={githubUser}
-                  onGitHubConnect={handleGitHubConnect}
-                  onGitHubDisconnect={handleGitHubDisconnect}
-                  onJulesDisconnect={handleJulesDisconnect}
+                  vercelToken={vercelToken}
+                  netlifyToken={netlifyToken}
+                  renderToken={renderToken}
+                  cloudflareToken={cloudflareToken}
                 />
               )}
-              {view === 'mcp' && (
-                <GlassMCPView sources={sources} isLoading={isLoadingSources} />
-              )}
+              {view === 'agents' && <GlassAgentsView githubToken={githubToken} julesApiKey={apiKey} githubUser={githubUser} onGitHubConnect={(t) => { setGithubToken(t); loadGitHubUser(t); }} onGitHubDisconnect={() => { setGithubToken(null); setGithubUser(null); }} onJulesDisconnect={() => { setApiKey(null); setStep('api-key'); }} />}
+              {view === 'mcp' && <GlassMCPView sources={sources} isLoading={isLoadingSources} />}
               {view === 'pings' && <GlassPingsView sessions={sessions} />}
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Bottom Navigation */}
       {view !== 'chat' && (
-        <div className="glass-nav fixed bottom-0 left-0 right-0 z-40 pb-safe">
+        <div className="glass-nav fixed bottom-0 left-0 right-0 z-40 pb-safe bg-[#03080a]/80 backdrop-blur-lg border-t border-white/5">
           <nav className="max-w-3xl mx-auto flex items-center justify-around h-16">
             {navTabs.map((tab) => {
               const isActive = view === tab.id;
               const Icon = tab.icon;
               return (
-                <button
-                  key={tab.id}
-                  onClick={() => setView(tab.id)}
-                  className={`relative flex flex-col items-center justify-center gap-1 px-4 py-2 rounded-lg transition-all duration-200 ${
-                    isActive
-                      ? 'text-[#00E5FF]'
-                      : 'text-[#547B88] hover:text-[#E0F7FA]'
-                  }`}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="nav-indicator"
-                      className="absolute -top-px left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-[#00E5FF]"
-                      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-                    />
-                  )}
-                  <Icon className={`w-5 h-5 ${isActive ? 'drop-shadow-[0_0_6px_rgba(0,229,255,0.5)]' : ''}`} />
+                <button key={tab.id} onClick={() => setView(tab.id)} className={`relative flex flex-col items-center justify-center gap-1 px-4 py-2 transition-all ${isActive ? 'text-[#00E5FF]' : 'text-[#547B88] hover:text-[#E0F7FA]'}`}>
+                  <Icon className={`w-5 h-5 ${isActive ? 'drop-shadow-[0_0_8px_rgba(0,229,255,0.5)]' : ''}`} />
                   <span className="text-[10px] font-medium">{tab.label}</span>
+                  {isActive && <motion.div layoutId="nav-indicator" className="absolute -top-px w-8 h-0.5 bg-[#00E5FF] rounded-full" />}
                 </button>
               );
             })}
@@ -357,28 +210,9 @@ export default function Home() {
         </div>
       )}
 
-      {/* Modals */}
-      <GlassNewMissionModal
-        sources={sources}
-        githubToken={githubToken}
-        apiKey={apiKey || ''}
-        isOpen={isNewMissionOpen}
-        onClose={() => setIsNewMissionOpen(false)}
-        onMissionCreated={handleMissionCreated}
-      />
-      <GlassAddRepoModal
-        githubToken={githubToken}
-        isOpen={isAddRepoOpen}
-        onClose={() => setIsAddRepoOpen(false)}
-        onRepoConnected={() => {
-          if (apiKey) loadData(apiKey);
-        }}
-      />
-      <GlassDeployNotification
-        githubToken={githubToken}
-        isOpen={isDeployOpen}
-        onClose={() => setIsDeployOpen(false)}
-      />
+      <GlassNewMissionModal sources={sources} githubToken={githubToken} apiKey={apiKey || ''} isOpen={isNewMissionOpen} onClose={() => setIsNewMissionOpen(false)} onMissionCreated={(id) => { setIsNewMissionOpen(false); if (apiKey) loadData(apiKey); if (id) handleSelectSession(id); }} />
+      <GlassAddRepoModal githubToken={githubToken} isOpen={isAddRepoOpen} onClose={() => setIsAddRepoOpen(false)} onRepoConnected={() => apiKey && loadData(apiKey)} />
+      <GlassDeployNotification githubToken={githubToken} isOpen={isDeployOpen} onClose={() => setIsDeployOpen(false)} />
     </div>
   );
 }
