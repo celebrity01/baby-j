@@ -317,7 +317,10 @@ export async function createNetlifySite(
     },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error(`Failed to create Netlify site: ${res.status}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || errData.message || `Failed to create Netlify site (${res.status})`);
+  }
   return res.json();
 }
 
